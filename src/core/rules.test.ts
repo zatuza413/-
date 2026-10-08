@@ -84,3 +84,15 @@ describe('照準補正', () => {
     expect(aimAssist(0, 0, 0, [{ x: 300 * Math.cos(deg(5)), y: 300 * Math.sin(deg(5)) }], 200, deg(3))).toBe(0);
   });
 });
+
+describe('呪詛返し', () => {
+  it('同じ敵には1秒に1回まで、ポイントは入らない', async () => {
+    const { CurseReturn } = await import('./rules');
+    const c = new CurseReturn(20, 1.0);
+    expect(c.trigger(7, 0)).toEqual({ damage: 20, givesPoints: false });
+    expect(c.trigger(7, 0.5).damage).toBe(0);
+    expect(c.trigger(8, 0.5).damage).toBe(20);
+    expect(c.trigger(7, 1.0).damage).toBe(20);
+    expect(c.trigger(null, 2).damage).toBe(0);
+  });
+});

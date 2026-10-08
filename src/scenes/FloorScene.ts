@@ -148,6 +148,7 @@ export class FloorScene extends CombatScene {
 
   private enterRoom(room: RoomState): void {
     room.visited = true;
+    this.resetRoomCounters();
     if (room.cleared) return;
 
     // 扉を閉めて敵を出す
@@ -206,15 +207,14 @@ export class FloorScene extends CombatScene {
     if (room && room !== this.current) this.enterRoom(room);
     if (room) this.current = room;
 
-    // 宝箱（段階4でアイテムに置き換える。今は回復と弾薬補充）
+    // 宝箱: 3つの候補から1つ選ぶ。ついでに弾薬を補充する
     for (const c of this.chests) {
       if (c.opened || Phaser.Math.Distance.Between(px, py, c.obj.x, c.obj.y) > 30) continue;
       c.opened = true;
       c.obj.setAlpha(0.35);
-      this.heal(FLOOR.chestHeal);
       this.weapons.refillAll();
-      Sfx.stock();
-      this.presenter.floatText(c.obj.x, c.obj.y - 24, '回復＋弾薬補充', '#ffe08a', 18);
+      this.openChest();
+      return;
     }
 
     // 階段
@@ -242,7 +242,7 @@ export class FloorScene extends CombatScene {
   }
 
   protected infoLines(): string[] {
-    return [`フロア ${this.run.floor} / ${FLOOR.count}`];
+    return [`フロア ${this.run.floor} / ${FLOOR.count}   通貨 ${this.run.currency}`];
   }
 
   // ------------------------------------------------------------ ミニマップ

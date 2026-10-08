@@ -72,6 +72,7 @@ export class TestRoomScene extends CombatScene {
         this.waveIndex++;
         for (const id of wave) this.spawnRandom(id);
         this.waveActive = true;
+        this.resetRoomCounters();
       }
     }
   }
@@ -103,11 +104,12 @@ export class TestRoomScene extends CombatScene {
   }
 
   protected helpLines(): string[] {
-    return [...super.helpLines(), 'テスト用: 1 直進撃ち / 2 突進 / 3 扇撃ち / 4 自爆型 / 5 迫撃砲 / 6 狙撃エリート を出す / H この表示を切替'];
+    return [...super.helpLines(), 'テスト用: 1 直進撃ち / 2 突進 / 3 扇撃ち / 4 自爆型 / 5 迫撃砲 / 6 狙撃エリート を出す / I 宝箱 / H この表示を切替'];
   }
 
   protected onDebugKey(code: string): void {
     const keys: Record<string, string> = { Digit1: 'shooter', Digit2: 'charger', Digit3: 'fan', Digit4: 'bomber', Digit5: 'mortar', Digit6: 'sniper' };
     if (keys[code]) this.spawnRandom(keys[code]);
+    else if (code === 'KeyI') this.openChest();
   }
 }

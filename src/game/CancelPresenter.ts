@@ -121,6 +121,16 @@ export class CancelPresenter {
       case 'confirmed':
         this.onConfirmed(e);
         break;
+      case 'graced':
+        this.floatText(p.x, p.y - 40, '猶予 +0.5秒', '#c9b0ff', 16);
+        break;
+      case 'borrowed':
+        Sfx.stock();
+        this.floatText(p.x, p.y - 40, '前借り（借金1）', '#c9b0ff', 16);
+        break;
+      case 'debtRepaid':
+        this.floatText(p.x, p.y - 40, '返済', '#c9b0ff', 14);
+        break;
     }
   }
 

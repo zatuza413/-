@@ -2,8 +2,9 @@
 // 部屋の作り方と進行は派生クラス（TestRoomScene / FloorScene）が決める。
 
 import Phaser from 'phaser';
-import { CANCEL, CHAIN, CONTACT, ENEMIES, ENEMY_BULLET, FX, ITEM_NUM, MORTAR, PLAYER, POINTS, STARTING_WEAPONS, TOUCH } from '../config/balance';
-import { aimAssist, effectiveRate, killBonus, PerKeyCooldown, pushAway, rawRate } from '../core/rules';
+import { CANCEL, CHAIN, CHEST, CONTACT, ENEMIES, ENEMY_BULLET, FX, ITEM_NUM, MORTAR, PLAYER, POINTS, STARTING_WEAPONS, TEST_ROOM_WEAPONS, TOUCH, WEAPONS } from '../config/balance';
+import { ITEMS, rollChestChoices, type ChestChoice, type ItemId } from '../core/items';
+import { aimAssist, CurseReturn, effectiveRate, killBonus, PerKeyCooldown, pushAway, rawRate } from '../core/rules';
 import { DamageQueue } from '../core/DamageQueue';
 import type { WeaponDef } from '../core/types';
 import { beamRate, bounceRate, erasePoints, holdRate, pointRateAt } from '../core/weaponMath';
@@ -28,6 +29,12 @@ export interface RunState {
   floor: number;
   /** この周回の計測を始めたか */
   telemetryStarted: boolean;
+  /** 持っているアイテム（1つずつ） */
+  items: ItemId[];
+  /** 通貨（ショップは段階5） */
+  currency: number;
+  /** 開けた宝箱の数（最初の宝箱は確定枠あり） */
+  chestsOpened: number;
 }
 
 export function newRunState(): RunState {
@@ -38,6 +45,9 @@ export function newRunState(): RunState {
     weapons: new WeaponSystem(STARTING_WEAPONS),
     floor: 1,
     telemetryStarted: false,
+    items: [],
+    currency: 0,
+    chestsOpened: 0,
   };
 }
 
@@ -88,6 +98,28 @@ export abstract class CombatScene extends Phaser.Scene {
   /** 迫撃砲の着弾予告 */
   private shells: Array<{ x: number; y: number; t: number; ownerId: number }> = [];
 
+  // アイテムの状態
+  /** 最後に撃った時刻（秒）。撃っていない間はポイントが溜まらない */
+  private lastShotAt = -Infinity;
+  /** 動かずにいる時間（据え撃ちの台座） */
+  private stillTime = 0;
+  /** 反撃の型: 効果の終わりと、再発動できるようになる時刻 */
+  private counterUntil = 0;
+  private counterLockUntil = 0;
+  /** 弾倉の誓いの再発動時刻 */
+  private vowReadyAt = 0;
+  /** 集中の照準器の加算 */
+  private focusStacks = 0;
+  /** 弾撃ち・かすめの、部屋ごとの獲得量と、かすめの直近1秒の記録 */
+  private shootdownRoom = 0;
+  private grazeRoom = 0;
+  private grazeLog: number[] = [];
+  private curse = new CurseReturn(ITEM_NUM.curse.damage, ITEM_NUM.curse.cooldown);
+  /** 呪詛返しの対象（相殺イベントの中で敵を倒さないよう、次のフレームで処理する） */
+  private pendingCurses: Array<number | null> = [];
+  /** 宝箱の3択を選んでいる間は止める */
+  protected choosing = false;
+
   // HUD
   private hud!: Phaser.GameObjects.Graphics;
   private ammoText!: Phaser.GameObjects.Text;
@@ -128,6 +160,17 @@ export abstract class CombatScene extends Phaser.Scene {
     this.hitstopUntil = 0;
     this.contactCooldown.clear();
     this.shells = [];
+    this.lastShotAt = -Infinity;
+    this.stillTime = 0;
+    this.counterUntil = 0;
+    this.counterLockUntil = 0;
+    this.vowReadyAt = 0;
+    this.focusStacks = 0;
+    this.grazeLog = [];
+    this.pendingCurses = [];
+    this.curse.clear();
+    this.choosing = false;
+    this.resetRoomCounters();
 
     this.queue = this.run.queue;
     this.weapons = this.run.weapons;
@@ -156,6 +199,14 @@ export abstract class CombatScene extends Phaser.Scene {
     this.physics.add.overlap(this.playerBullets, this.enemies, (b, e) => this.onPlayerBulletHit(b as Bullet, e as Enemy));
     this.physics.add.overlap(this.player, this.enemyBullets, (_p, b) => this.onEnemyBulletHit(b as Bullet));
     this.physics.add.overlap(this.player, this.enemies, (_p, e) => this.onEnemyContact(e as Enemy));
+    // 弾撃ちの銃身: 自機弾で大きな敵弾を撃ち落とす
+    this.physics.add.overlap(
+      this.playerBullets,
+      this.enemyBullets,
+      (pb, eb) => this.onShootdown(pb as Bullet, eb as Bullet),
+      (pb, eb) => this.has('shootdownBarrel') && (eb as Bullet).big && (pb as Bullet).weapon?.kind !== 'rocket',
+    );
+    this.applyItemModifiers();
 
     // 相殺の演出
     this.presenter = new CancelPresenter({
@@ -168,6 +219,8 @@ export abstract class CombatScene extends Phaser.Scene {
     });
     this.unsubscribeQueue = this.queue.on((e) => {
       if (e.type === 'confirmed') this.onConfirmed(e.damage);
+      if (e.type === 'queued') this.onPendingQueued();
+      if (e.type === 'cancelled' && this.has('curseReturn')) this.pendingCurses.push(e.pending.sourceId);
       if (!this.recordTelemetry) return;
       if (e.type === 'cancelled') telemetry.cancel();
       else if (e.type === 'confirmed') telemetry.confirm(e.reason);
@@ -263,10 +316,21 @@ export abstract class CombatScene extends Phaser.Scene {
         if (!this.dead && this.player.tryDash(this.controls.move)) Sfx.dash();
       },
       reload: () => {
-        if (!this.dead && this.weapons.startReload()) Sfx.reload();
+        if (this.dead || this.choosing) return;
+        const r = this.weapons.startReload();
+        if (r) Sfx.reload();
+        if (r === 'fast') {
+          Sfx.stock();
+          this.presenter.floatText(this.player.x, this.player.y - 40, '早撃ち！', '#ffe066', 16);
+        }
       },
       switchWeapon: (d) => this.weapons.switch(d),
       debugKey: (code) => {
+        if (this.choosing) {
+          const i = ['Digit1', 'Digit2', 'Digit3'].indexOf(code);
+          if (i >= 0) this.chooseChest(i);
+          return;
+        }
         if (this.dead) return;
         if (code === 'KeyH') this.helpText.setVisible(!this.helpText.visible);
         else this.onDebugKey(code);
@@ -292,6 +356,11 @@ export abstract class CombatScene extends Phaser.Scene {
     // 与ダメージ由来のポイント（倒しきれなくても少し溜まる）。武器ごとの倍率 × レリック加算、上限つき
     const dist = Phaser.Math.Distance.Between(this.player.x, this.player.y, e.x, e.y);
     const weaponRate = weapon ? pointRateAt(weapon, dist) * b.rateMult * bounceRate(weapon, bounces) : 1;
+    // 集中の照準器: 遠くの命中が続くほど倍率が上がる（400px以上は2回分）
+    if (this.has('focusScope')) {
+      const F = ITEM_NUM.focus;
+      if (dist >= F.minDist) this.focusStacks = Math.min(F.max, this.focusStacks + F.perHit * (dist >= F.farDist ? 2 : 1));
+    }
     this.damageEnemy(e, b.damage, weaponRate, dist, weapon, extraAdds, weapon?.ricochet && bounces > 0 ? weapon.ricochet.killBonus : 0);
   }
 
@@ -299,7 +368,7 @@ export abstract class CombatScene extends Phaser.Scene {
   protected damageEnemy(e: Enemy, amount: number, weaponRate: number, dist: number, weapon: WeaponDef | null, extraAdds: number[] = [], extraKillBonus = 0, givePoints = true): void {
     const dealt = Math.min(amount, Math.max(0, e.hp));
     if (givePoints) this.gainPoints((dealt / CANCEL.damagePerPoint) * this.pointRate(weaponRate, extraAdds), dist, false);
-    if (e.damage(amount)) this.killEnemy(e, weapon, dist, extraKillBonus);
+    if (e.damage(amount)) this.killEnemy(e, weapon, dist, extraKillBonus, !givePoints);
   }
 
   /** 自機弾が壁に当たった: 跳弾は跳ね、ロケットは爆発、それ以外は消える */
@@ -313,7 +382,15 @@ export abstract class CombatScene extends Phaser.Scene {
       b.bounces++;
       return;
     }
+    this.onPlayerBulletMiss(b);
     b.kill();
+  }
+
+  /** 自機弾が敵に当たらずに消えた（集中の照準器が下がる） */
+  private onPlayerBulletMiss(b: Bullet): void {
+    if (this.has('focusScope') && b.weapon && b.weapon.kind !== 'rocket') {
+      this.focusStacks = Math.max(0, this.focusStacks - ITEM_NUM.focus.missPenalty);
+    }
   }
 
   /** ロケットの爆風: 敵にダメージ、敵弾を消してポイント、自分が近いと即確定 */
@@ -395,7 +472,8 @@ export abstract class CombatScene extends Phaser.Scene {
     }
   }
 
-  protected killEnemy(e: Enemy, weapon: WeaponDef | null = null, dist = Infinity, extraBonus = 0): void {
+  protected killEnemy(e: Enemy, weapon: WeaponDef | null = null, dist = Infinity, extraBonus = 0, noPoints = false): void {
+    const hadPending = this.queue.count > 0;
     const src = this.sources.get(e.uid);
     if (src) {
       src.x = e.x;
@@ -431,7 +509,10 @@ export abstract class CombatScene extends Phaser.Scene {
       });
     }
     e.destroy();
-    this.gainPoints((e.def.elite ? CANCEL.killPoints.elite : CANCEL.killPoints.normal) + bonus, dist, true);
+    // 通貨: 1体ごとに +1。危険報酬の財布は、予告がある間に倒すとさらに +1
+    this.run.currency += 1 + (this.has('riskWallet') && hadPending ? ITEM_NUM.walletCurrency : 0);
+    // 呪詛返しで倒した場合はポイントが入らない
+    if (!noPoints) this.gainPoints((e.def.elite ? CANCEL.killPoints.elite : CANCEL.killPoints.normal) + bonus, dist, true);
     this.onEnemyKilled(e);
   }
 
@@ -453,9 +534,206 @@ export abstract class CombatScene extends Phaser.Scene {
     if (r !== 'ignored') this.recordHit(e.uid);
   }
 
-  /** レリックによるポイント倍率の加算（+0.5 なら 0.5）。派生クラス・アイテムが上書きする */
+  /** レリックによるポイント倍率の加算（+0.5 なら 0.5）。足し合わせて使う */
   protected relicAdds(): number[] {
-    return [];
+    const adds: number[] = [];
+    const now = this.time.now / 1000;
+    if (this.has('backwater') && this.queue.count > 0) adds.push(ITEM_NUM.backwater);
+    if (this.has('counterForm') && now < this.counterUntil) adds.push(ITEM_NUM.counter.bonus);
+    if (this.has('stanceMount') && this.stillTime >= ITEM_NUM.stance.stillTime && this.isShooting) adds.push(ITEM_NUM.stance.bonus);
+    if (this.has('focusScope') && this.focusStacks > 0) adds.push(this.focusStacks);
+    return adds;
+  }
+
+  // ------------------------------------------------------------ アイテム
+
+  protected has(id: ItemId): boolean {
+    return this.run.items.includes(id);
+  }
+
+  /** 撃っている間か（最後に撃ってから少しの間を含む） */
+  protected get isShooting(): boolean {
+    return this.time.now / 1000 - this.lastShotAt <= ITEM_NUM.shootingGrace;
+  }
+
+  /** 部屋ごとの上限を戻す（部屋に入ったとき） */
+  protected resetRoomCounters(): void {
+    this.shootdownRoom = 0;
+    this.grazeRoom = 0;
+  }
+
+  /** 持っているアイテムを相殺ロジックと武器に反映する。上限は相殺ロジック側でも強制する */
+  protected applyItemModifiers(): void {
+    this.queue.setModifiers({
+      timerBonus: this.has('hourglass') ? ITEM_NUM.hourglassTimer : 0,
+      doublePointChance: this.has('doubleCancel') ? ITEM_NUM.doubleChance : 0,
+      stockBonus: this.has('savingsRing') ? ITEM_NUM.ringStock : 0,
+      chainWindowMult: this.has('chainBell') ? ITEM_NUM.bellWindowMult : 1,
+      canBorrow: this.has('debtNote'),
+      hasGrace: this.has('graceScale'),
+    });
+    this.weapons.activeReload = this.has('quickdrawBelt') ? { ...ITEM_NUM.quickdraw } : null;
+  }
+
+  /** 宝箱の中身を受け取る */
+  protected acquire(c: ChestChoice): void {
+    if (c.kind === 'item') {
+      if (!this.run.items.includes(c.id)) this.run.items.push(c.id);
+      this.applyItemModifiers();
+    } else {
+      this.weapons.add(c.id);
+      this.weapons.index = this.weapons.slots.findIndex((s) => s.def.id === c.id);
+    }
+    if (this.recordTelemetry) telemetry.item(c.kind === 'item' ? c.id : `weapon:${c.id}`);
+    Sfx.stock();
+    this.presenter.floatText(this.player.x, this.player.y - 44, c.kind === 'item' ? ITEMS[c.id].name : WEAPONS[c.id].name, '#ffe08a', 18);
+  }
+
+  /** 予告が積まれた: 弾倉の誓い・反撃の型 */
+  private onPendingQueued(): void {
+    const now = this.time.now / 1000;
+    if (this.has('magazineVow') && now >= this.vowReadyAt && this.weapons.current.def.id !== 'handgun') {
+      this.weapons.addRounds(ITEM_NUM.magazineVow.rounds);
+      this.vowReadyAt = now + ITEM_NUM.magazineVow.cooldown;
+    }
+    if (this.has('counterForm') && now >= this.counterLockUntil) {
+      this.counterUntil = now + ITEM_NUM.counter.duration;
+      this.counterLockUntil = now + ITEM_NUM.counter.lockout;
+    }
+  }
+
+  /** 呪詛返し: 相殺した予告を作った敵へダメージ（ポイントなし） */
+  private processCurses(): void {
+    const now = this.time.now / 1000;
+    for (const id of this.pendingCurses) {
+      const e = (this.enemies.getChildren() as Enemy[]).find((x) => x.active && x.uid === id);
+      if (!e) continue;
+      const r = this.curse.trigger(id, now);
+      if (r.damage <= 0) continue;
+      const line = this.add.graphics().setDepth(8);
+      line.lineStyle(3, 0xc04bff, 0.9).lineBetween(this.player.x, this.player.y, e.x, e.y);
+      this.tweens.add({ targets: line, alpha: 0, duration: 300, onComplete: () => line.destroy() });
+      const dist = Phaser.Math.Distance.Between(this.player.x, this.player.y, e.x, e.y);
+      this.damageEnemy(e, r.damage, 0, dist, null, [], 0, r.givesPoints);
+    }
+    this.pendingCurses = [];
+  }
+
+  /** 弾撃ちの銃身: 大きな敵弾を撃ち落とした */
+  private onShootdown(pb: Bullet, eb: Bullet): void {
+    if (!pb.active || !eb.active) return;
+    eb.kill();
+    pb.kill();
+    const pop = this.add.circle(eb.x, eb.y, 8, 0xffe066).setDepth(54);
+    this.tweens.add({ targets: pop, scale: 2, alpha: 0, duration: 200, onComplete: () => pop.destroy() });
+    const S = ITEM_NUM.shootdown;
+    const gain = Math.min(S.perBullet, S.roomMax - this.shootdownRoom);
+    if (gain > 0) {
+      this.shootdownRoom += gain;
+      this.gainPoints(gain, Phaser.Math.Distance.Between(this.player.x, this.player.y, eb.x, eb.y), false);
+    }
+  }
+
+  /** かすめの護符: 敵弾が近くを通り抜けたら少しポイント（撃っている間だけ。毎秒・部屋ごとに上限） */
+  private updateGraze(): void {
+    if (!this.has('grazeCharm')) return;
+    const G = ITEM_NUM.graze;
+    const now = this.time.now / 1000;
+    this.grazeLog = this.grazeLog.filter((t) => now - t < 1);
+    for (const obj of this.enemyBullets.getChildren()) {
+      const b = obj as Bullet;
+      if (!b.active || b.graze === 2) continue;
+      const d = Phaser.Math.Distance.Between(b.x, b.y, this.player.x, this.player.y);
+      if (d <= G.radius) {
+        b.graze = 1;
+        continue;
+      }
+      if (b.graze !== 1) continue;
+      b.graze = 2; // 当たらずに通り抜けた
+      if (!this.isShooting || this.grazeRoom >= G.roomMax || (this.grazeLog.length + 1) * G.perGraze > G.perSecond + 1e-9) continue;
+      const gain = Math.min(G.perGraze, G.roomMax - this.grazeRoom);
+      this.grazeRoom += gain;
+      this.grazeLog.push(now);
+      this.gainPoints(gain, d, false);
+    }
+  }
+
+  // ------------------------------------------------------------ 宝箱の3択
+
+  private chestCards: Phaser.GameObjects.GameObject[] = [];
+  private chestChoices: ChestChoice[] = [];
+  private chestDone: (() => void) | null = null;
+
+  /** 宝箱を開ける: 3つの候補から1つ選ぶ。選ぶまでゲームは止まる */
+  protected openChest(onDone?: () => void): void {
+    const choices = rollChestChoices(Math.random, {
+      ownedItems: this.run.items,
+      ownedWeapons: this.weapons.slots.map((s) => s.def.id),
+      allWeapons: TEST_ROOM_WEAPONS,
+      n: CHEST.choices,
+      guaranteed: this.run.chestsOpened === 0 ? (CHEST.firstGuaranteed as ItemId) : null,
+    });
+    this.run.chestsOpened++;
+    if (choices.length === 0) {
+      onDone?.();
+      return;
+    }
+    this.choosing = true;
+    this.chestChoices = choices;
+    this.chestDone = onDone ?? null;
+    this.physics.world.pause();
+    const { width, height } = this.scale;
+    const bg = this.add.rectangle(0, 0, width, height, 0x000000, 0.72).setOrigin(0).setScrollFactor(0).setDepth(300);
+    const title = this.add
+      .text(width / 2, 70, '宝箱: 1つ選ぶ', { fontFamily: 'sans-serif', fontSize: '24px', fontStyle: 'bold', color: '#ffe08a' })
+      .setOrigin(0.5)
+      .setScrollFactor(0)
+      .setDepth(301);
+    this.chestCards = [bg, title];
+    const cw = 250;
+    const gap = 24;
+    const x0 = width / 2 - (cw * choices.length + gap * (choices.length - 1)) / 2 + cw / 2;
+    choices.forEach((c, i) => {
+      const x = x0 + i * (cw + gap);
+      const y = height / 2 + 10;
+      const isItem = c.kind === 'item';
+      const name = isItem ? ITEMS[c.id].name : WEAPONS[c.id].name;
+      const kind = isItem ? (ITEMS[c.id].category === 'relic' ? 'レリック' : '相殺') : '武器';
+      const desc = isItem ? ITEMS[c.id].desc : this.weaponDesc(c.id);
+      const card = this.add.rectangle(x, y, cw, 260, 0x1c1c2c, 1).setStrokeStyle(2, isItem ? 0xffe08a : 0x9fe8ff).setScrollFactor(0).setDepth(301);
+      card.setInteractive({ useHandCursor: true }).on('pointerdown', () => this.chooseChest(i));
+      const t1 = this.add.text(x, y - 100, `${i + 1}  ${kind}`, { fontFamily: 'sans-serif', fontSize: '13px', color: '#8888aa' }).setOrigin(0.5).setScrollFactor(0).setDepth(302);
+      const t2 = this.add.text(x, y - 66, name, { fontFamily: 'sans-serif', fontSize: '20px', fontStyle: 'bold', color: '#ffffff' }).setOrigin(0.5).setScrollFactor(0).setDepth(302);
+      const t3 = this.add
+        .text(x, y - 30, desc, { fontFamily: 'sans-serif', fontSize: '14px', color: '#d0d0e0', align: 'center', wordWrap: { width: cw - 30, useAdvancedWrap: true } })
+        .setOrigin(0.5, 0)
+        .setScrollFactor(0)
+        .setDepth(302);
+      this.chestCards.push(card, t1, t2, t3);
+    });
+  }
+
+  private weaponDesc(id: keyof typeof WEAPONS): string {
+    const d: Record<string, string> = {
+      shotgun: '近いほどポイントが溜まる。至近で倒すと+0.5',
+      machinegun: '押しっぱなしで倍率が×0.5→×1.5に上がる',
+      laser: '貫通する照射。同時に当てた数で倍率が上がる',
+      ricochet: '壁で跳ねる。跳ねてから当てるほど高倍率',
+      rocket: '爆風で敵弾を消すとポイント。近いと自爆',
+    };
+    return d[id] ?? '';
+  }
+
+  private chooseChest(i: number): void {
+    if (!this.choosing || i < 0 || i >= this.chestChoices.length) return;
+    const c = this.chestChoices[i];
+    for (const o of this.chestCards) o.destroy();
+    this.chestCards = [];
+    this.choosing = false;
+    this.physics.world.resume();
+    this.acquire(c);
+    this.chestDone?.();
+    this.chestDone = null;
   }
 
   /** 与ダメージ由来のポイント倍率: 武器の倍率 × (1 + レリック加算) を上限つきで */
@@ -520,7 +798,9 @@ export abstract class CombatScene extends Phaser.Scene {
   }
 
   private get attackMult(): number {
-    return 1 + (this.attackBuffTime > 0 ? this.attackBuff : 0);
+    // 怒りの予告: 予告が2つ以上ある間、攻撃力アップ
+    const wrath = this.has('wrath') && this.queue.count >= ITEM_NUM.wrath.minPending ? ITEM_NUM.wrath.attack : 0;
+    return 1 + (this.attackBuffTime > 0 ? this.attackBuff : 0) + wrath;
   }
 
   // ------------------------------------------------------------ 進行
@@ -566,7 +846,7 @@ export abstract class CombatScene extends Phaser.Scene {
   }
 
   update(time: number, deltaMs: number): void {
-    if (this.dead) return;
+    if (this.dead || this.choosing) return;
     if (time < this.hitstopUntil) return;
     if (this.physics.world.isPaused) this.physics.world.resume();
 
@@ -588,6 +868,10 @@ export abstract class CombatScene extends Phaser.Scene {
     // 射撃（ダッシュ中も可能）
     const fire = this.weapons.tick(dt, this.controls.fireHeld, this.player.aim);
     if (fire.autoReload) Sfx.reload();
+    if (fire.shots.length > 0 || fire.beam) this.lastShotAt = time / 1000;
+    // 据え撃ちの台座: 動いたら（ダッシュも）解除
+    const moving = this.controls.move.lengthSq() > 0.01 || this.player.isDashing;
+    this.stillTime = moving ? 0 : this.stillTime + dt;
     this.updateBeam(dt, fire.beam);
     for (const shot of fire.shots) {
       const b = spawnBullet(this.playerBullets, shot.def.kind === 'rocket' ? 'rocket' : 'pbullet');
@@ -640,8 +924,10 @@ export abstract class CombatScene extends Phaser.Scene {
     this.drawTelegraphs();
     this.updateShells(dt);
 
-    tickBullets(this.playerBullets, dt);
+    tickBullets(this.playerBullets, dt, (b) => this.onPlayerBulletMiss(b));
     tickBullets(this.enemyBullets, dt);
+    this.updateGraze();
+    this.processCurses();
 
     // 相殺
     this.queue.update(dt);
@@ -788,6 +1074,9 @@ export abstract class CombatScene extends Phaser.Scene {
       this.ammoText.setText(`${w.def.name}   ${w.mag} / ${w.def.magazine}   (${reserve})${ramp}${this.weapons.boosted ? '  早撃ち+' : ''}`);
     }
     const lines = this.infoLines();
+    if (this.run.items.length > 0) lines.push(this.run.items.map((id) => ITEMS[id].name).join('・'));
+    if (this.has('focusScope') && this.focusStacks > 0) lines.push(`集中 +${this.focusStacks.toFixed(1)}`);
+    if (this.queue.debt > 0) lines.push(`借金 ${this.queue.debt}`);
     if (this.attackBuffTime > 0) lines.push(`攻撃力 +${Math.round(this.attackBuff * 100)}%  ${this.attackBuffTime.toFixed(1)}s`);
     this.infoText.setText(lines.join('\n'));
 
@@ -798,6 +1087,9 @@ export abstract class CombatScene extends Phaser.Scene {
       const x = this.player.x - 18;
       const y = this.player.y + FX.ringRadius + 18;
       this.reloadBar.fillStyle(0x222222, 0.8).fillRect(x, y, 36, 4);
+      // 早撃ちの弾帯: 再入力の判定の幅を黄色で示す
+      const span = this.weapons.activeReloadSpan;
+      if (span) this.reloadBar.fillStyle(0xffe066, 0.9).fillRect(x + 36 * span[0], y - 2, 36 * (span[1] - span[0]), 8);
       this.reloadBar.fillStyle(0xffffff, 1).fillRect(x, y, 36 * ratio, 4);
     }
   }

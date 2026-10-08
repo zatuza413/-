@@ -105,3 +105,27 @@ export function aimAssist(
   }
   return best;
 }
+
+/**
+ * 呪詛返し: 相殺した予告を作った敵にダメージ。同じ敵には interval 秒に1回まで。
+ * このダメージ（と、それで倒したこと）からは相殺ポイントが入らない。
+ */
+export class CurseReturn {
+  private readonly cd: PerKeyCooldown;
+  constructor(
+    private readonly damage: number,
+    interval: number,
+  ) {
+    this.cd = new PerKeyCooldown(interval);
+  }
+
+  /** 相殺したときに呼ぶ。与えるダメージ（0 なら何もしない）と、ポイントを与えるか（常に false） */
+  trigger(sourceId: number | null, now: number): { damage: number; givesPoints: false } {
+    if (sourceId === null || sourceId < 0 || !this.cd.tryUse(sourceId, now)) return { damage: 0, givesPoints: false };
+    return { damage: this.damage, givesPoints: false };
+  }
+
+  clear(): void {
+    this.cd.clear();
+  }
+}
