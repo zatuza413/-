@@ -1,5 +1,6 @@
 import Phaser from 'phaser';
 import { Sfx } from '../game/Sfx';
+import { exportTelemetry, telemetry } from '../game/telemetryStore';
 
 /** 仮のタイトル（段階5で作り込む） */
 export class TitleScene extends Phaser.Scene {
@@ -26,5 +27,22 @@ export class TitleScene extends Phaser.Scene {
     };
     button(height / 2 + 50, 'はじめる', 'Floor');
     button(height / 2 + 125, 'テスト部屋', 'TestRoom');
+
+    // 計測（デバッグ用）
+    const sum = telemetry.summary();
+    const pct = (r: number | null) => (r === null ? '—' : `${Math.round(r * 100)}%`);
+    const info = this.add
+      .text(
+        16,
+        height - 14,
+        `計測: ${telemetry.runs.length}周  相殺成功率 PC ${pct(sum.pc.cancelRate)}（${sum.pc.rooms}部屋） / スマホ ${pct(sum.touch.cancelRate)}（${sum.touch.rooms}部屋）  [計測データを書き出す]`,
+        { fontFamily: 'sans-serif', fontSize: '13px', color: '#8888aa' },
+      )
+      .setOrigin(0, 1)
+      .setInteractive({ useHandCursor: true });
+    info.on('pointerdown', async () => {
+      const msg = await exportTelemetry();
+      info.setText(`計測データ: ${msg}`);
+    });
   }
 }

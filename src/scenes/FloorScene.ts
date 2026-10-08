@@ -6,6 +6,7 @@ import { FLOOR, TILE } from '../config/balance';
 import { generateFloor, TILE_FLOOR, type FloorLayout, type RoomSpec } from '../core/floorGen';
 import { createRng, pick, randInt } from '../core/rng';
 import { Sfx } from '../game/Sfx';
+import { telemetry } from '../game/telemetryStore';
 import { CombatScene } from './CombatScene';
 
 /** タイルセット 'tiles' の並び */
@@ -51,6 +52,11 @@ export class FloorScene extends CombatScene {
     this.fighting = null;
     this.chests = [];
     this.stairs = null;
+    this.recordTelemetry = true;
+    if (!this.run.telemetryStarted) {
+      telemetry.startRun();
+      this.run.telemetryStarted = true;
+    }
 
     const seed = (Math.random() * 2 ** 31) | 0;
     this.layout = generateFloor(createRng(seed), FLOOR.gen);
@@ -139,6 +145,7 @@ export class FloorScene extends CombatScene {
     }
     this.setDoors(room, true);
     this.fighting = room;
+    telemetry.startRoom(this.run.floor, room.spec.type, this.controls.touchMode ? 'touch' : 'pc');
     this.cameras.main.shake(120, 0.003);
   }
 
@@ -150,6 +157,7 @@ export class FloorScene extends CombatScene {
     this.fighting = null;
     this.setDoors(room, false);
     this.queue.clearAll();
+    telemetry.endRoom();
     if (room.spec.type === 'boss') this.spawnStairs(room.area.centerX, room.area.centerY);
   }
 
@@ -195,6 +203,7 @@ export class FloorScene extends CombatScene {
     if (this.stairs && Phaser.Math.Distance.Between(px, py, this.stairs.x, this.stairs.y) < 26) {
       this.stairs = null;
       if (this.run.floor >= FLOOR.count) {
+        telemetry.endRun({ cleared: true, died: false });
         this.scene.start('Clear', { stats: { ...this.queue.stats, confirms: { ...this.queue.stats.confirms } }, hp: this.player.hp });
       } else {
         this.run.floor++;
@@ -204,6 +213,10 @@ export class FloorScene extends CombatScene {
     }
 
     this.drawMinimap();
+  }
+
+  protected onDied(): void {
+    telemetry.endRun({ cleared: false, died: true });
   }
 
   protected restartAfterDeath(): void {

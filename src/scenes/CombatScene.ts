@@ -14,6 +14,8 @@ import type { EnemyContext } from '../game/enemyBehaviors';
 import { Player } from '../game/Player';
 import { Sfx } from '../game/Sfx';
 import { WeaponSystem } from '../game/WeaponSystem';
+import { bandOf, cancelRate, type DistanceBand } from '../core/Telemetry';
+import { telemetry } from '../game/telemetryStore';
 
 /** フロアをまたいで引き継ぐ状態 */
 export interface RunState {
@@ -23,6 +25,8 @@ export interface RunState {
   weapons: WeaponSystem;
   /** 1 始まり */
   floor: number;
+  /** この周回の計測を始めたか */
+  telemetryStarted: boolean;
 }
 
 export function newRunState(): RunState {
@@ -32,6 +36,7 @@ export function newRunState(): RunState {
     queue: new DamageQueue(CANCEL),
     weapons: new WeaponSystem(STARTING_WEAPONS),
     floor: 1,
+    telemetryStarted: false,
   };
 }
 
@@ -72,6 +77,8 @@ export abstract class CombatScene extends Phaser.Scene {
   private attackBuffTime = 0;
   private hitstopUntil = 0;
   protected dead = false;
+  /** 計測するか（本編のみ。テスト部屋では記録しない） */
+  protected recordTelemetry = false;
   private unsubscribeQueue: (() => void) | null = null;
 
   // HUD
@@ -151,6 +158,11 @@ export abstract class CombatScene extends Phaser.Scene {
     });
     this.unsubscribeQueue = this.queue.on((e) => {
       if (e.type === 'confirmed') this.onConfirmed(e.damage);
+      if (!this.recordTelemetry) return;
+      if (e.type === 'cancelled') telemetry.cancel();
+      else if (e.type === 'confirmed') telemetry.confirm(e.reason);
+      else if (e.type === 'chain' && e.count === this.queue.chainMin) telemetry.chain();
+      else if (e.type === 'roomCleared') telemetry.wipe(e.count);
     });
 
     this.createHud();
@@ -244,7 +256,7 @@ export abstract class CombatScene extends Phaser.Scene {
     const dist = Phaser.Math.Distance.Between(this.player.x, this.player.y, e.x, e.y);
     const dealt = Math.min(b.damage, Math.max(0, e.hp));
     const rate = weapon ? pointRateAt(weapon, dist) : 1;
-    this.queue.addPoints((dealt / CANCEL.damagePerPoint) * rate, { canDouble: false });
+    this.gainPoints((dealt / CANCEL.damagePerPoint) * rate, dist, false);
     if (e.damage(b.damage)) this.killEnemy(e, weapon, dist);
   }
 
@@ -264,20 +276,39 @@ export abstract class CombatScene extends Phaser.Scene {
     const bonus = closeKillBonusAt(weapon, dist);
     if (bonus > 0) this.presenter.floatText(e.x, e.y - 18, `至近 +${bonus}`, '#ffb35a', 15);
     e.destroy();
-    this.queue.addPoints((e.def.elite ? CANCEL.killPoints.elite : CANCEL.killPoints.normal) + bonus);
+    this.gainPoints((e.def.elite ? CANCEL.killPoints.elite : CANCEL.killPoints.normal) + bonus, dist, true);
     this.onEnemyKilled(e);
   }
 
   private onEnemyBulletHit(b: Bullet): void {
     if (!b.active || this.dead) return;
     b.kill();
-    this.queue.hit('bullet', b.ownerId);
+    const r = this.queue.hit('bullet', b.ownerId);
+    if (r !== 'ignored') this.recordHit(b.ownerId);
   }
 
   private onEnemyContact(e: Enemy): void {
     if (this.dead || e.isSpawning || e.stun > 0 || !e.contactActive) return;
-    this.queue.hit('contact', e.uid);
+    const r = this.queue.hit('contact', e.uid);
+    if (r !== 'ignored') this.recordHit(e.uid);
   }
+
+  /** 相殺ポイントを得る（計測の距離帯も記録） */
+  protected gainPoints(amount: number, dist: number, canDouble: boolean): void {
+    this.queue.addPoints(amount, { canDouble });
+    if (this.recordTelemetry) telemetry.points(amount, Number.isFinite(dist) ? bandOf(dist) : null);
+  }
+
+  /** 被弾の計測。距離帯は、その被弾を作った敵との距離 */
+  private recordHit(sourceId: number | null): void {
+    if (!this.recordTelemetry) return;
+    const src = sourceId !== null ? this.sources.get(sourceId) : undefined;
+    const band: DistanceBand | null = src ? bandOf(Phaser.Math.Distance.Between(this.player.x, this.player.y, src.x, src.y)) : null;
+    telemetry.hit(band);
+  }
+
+  /** 死亡したとき（計測の締めなど） */
+  protected onDied(): void {}
 
   private onConfirmed(damage: number): void {
     if (this.dead) return;
@@ -345,14 +376,18 @@ export abstract class CombatScene extends Phaser.Scene {
     this.dead = true;
     Sfx.death();
     this.physics.world.pause();
+    this.onDied();
     const s = this.queue.stats;
+    const rate = cancelRate(s.cancels, s.confirms);
     this.showOverlay(
       [
         '相殺に失敗した',
         '',
         `被弾 ${s.hits}   相殺 ${s.cancels}   連鎖 ${s.chains}（最大 ×${s.bestChain}）`,
         `確定  時間切れ ${s.confirms.timeout} / 上限超過 ${s.confirms.overflow} / 即時 ${s.confirms.instant}`,
-        `部屋クリアで消えた予告 ${s.roomClearWipes}`,
+        `相殺成功率 ${rate === null ? '—' : Math.round(rate * 100) + '%'}`,
+        '',
+        `部屋全滅で消えた予告 ${s.roomClearWipes}（相殺・成功率には数えない）`,
         '',
         this.controls.touchMode ? 'タップで再挑戦' : 'クリックで再挑戦',
       ],
@@ -366,6 +401,7 @@ export abstract class CombatScene extends Phaser.Scene {
     if (this.physics.world.isPaused) this.physics.world.resume();
 
     const dt = Math.min(deltaMs, 50) / 1000;
+    if (this.recordTelemetry) telemetry.tick(dt);
     this.controls.update(this.cameras.main, this.player.x, this.player.y);
 
     // 自機
@@ -437,7 +473,7 @@ export abstract class CombatScene extends Phaser.Scene {
     const { x, y } = this.player;
     // 火の床: 入った瞬間に1回だけ予告を積む（継続ダメージで埋まらないように）
     const nowInFire = this.hazards.some((h) => h.kind === 'fire' && h.rect.contains(x, y));
-    if (nowInFire && !this.inFire) this.queue.hit('hazard', null);
+    if (nowInFire && !this.inFire && this.queue.hit('hazard', null) !== 'ignored') this.recordHit(null);
     this.inFire = nowInFire;
 
     // 落とし穴: ダッシュ中は飛び越せる。止まった位置が穴なら即時確定
