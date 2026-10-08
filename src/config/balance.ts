@@ -56,6 +56,8 @@ export const PLAYER = {
   maxHp: 6,
   /** 移動速度 */
   speed: 210,
+  /** 戦闘中でないとき（通路・クリア済みの部屋）の移動速度の倍率（仮） */
+  travelSpeedMult: 1.8,
   /** 当たり判定の半径。見た目より小さめにして「避けた感」を出す */
   hitRadius: 6,
   /** 見た目の半径 */
@@ -301,22 +303,28 @@ export const WEAPONS: Record<WeaponId, WeaponDef> = {
     bulletRadius: 3,
     bulletColor: 0xfff7b0,
   },
-  // 照射・すべて貫通。貫通した数で稼ぐ（同時に当たる敵が多いほど倍率が上がる）
+  // 照射・すべて貫通。貫通した数で稼ぐ（同時に当たる敵が多いほど倍率が上がる）。
+  // 必ず当たるので、遠くほどダメージが下がる（遠距離の狙撃撃破を簡単にしすぎない）
   laser: {
     id: 'laser',
     name: 'レーザー',
     kind: 'beam',
-    damage: 40, // 毎秒
+    damage: 55, // 毎秒（仮。持続で約37 = 過熱3秒＋冷却1.5秒）
     fireRate: 1,
     pellets: 1,
     spreadDeg: 0,
     bulletSpeed: 0,
-    range: 700,
+    range: 600,
     magazine: 1,
     maxAmmo: null,
     reloadTime: 0,
     pointRate: 1.0,
     heat: { max: 3.0, cooldown: 1.5 },
+    /** 距離によるダメージ倍率（仮）: 250px までは100%、600px で50% */
+    damageFalloff: [
+      [250, 1.0],
+      [600, 0.5],
+    ],
     beamRate: { base: 0.6, perExtra: 0.4, max: 2.2 },
     bulletRadius: 3,
     bulletColor: 0x9ff0ff,

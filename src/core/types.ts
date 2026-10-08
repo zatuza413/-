@@ -33,6 +33,8 @@ export interface WeaponDef {
    * 範囲武器を「張り付くほど相殺が溜まる」武器にするために使う。
    */
   pointFalloff?: Array<[number, number]>;
+  /** 敵との距離によるダメージの倍率（任意）。書き方は pointFalloff と同じ */
+  damageFalloff?: Array<[number, number]>;
   /** この距離以内で倒すと撃破ポイントにボーナスを足す（任意） */
   closeKillBonus?: { range: number; points: number };
   /** 弾の種類: 通常弾 / 照射（レーザー）/ ロケット（爆風）。省略時は通常弾 */

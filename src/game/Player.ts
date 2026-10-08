@@ -54,7 +54,7 @@ export class Player extends Phaser.Physics.Arcade.Image {
   }
 
   /** move: 移動入力（長さ0〜1。スティックの倒し具合で速度が変わる）、aim: 照準角 */
-  tick(dt: number, move: Phaser.Math.Vector2, aim: number): void {
+  tick(dt: number, move: Phaser.Math.Vector2, aim: number, speedMult = 1): void {
     this.aim = aim;
     this.dashCooldown = Math.max(0, this.dashCooldown - dt);
     const body = this.body as Phaser.Physics.Arcade.Body;
@@ -68,7 +68,7 @@ export class Player extends Phaser.Physics.Arcade.Image {
       this.setScale(1.15, 0.85);
       this.setRotation(Math.atan2(this.dashDir.y, this.dashDir.x));
     } else {
-      body.setVelocity(move.x * PLAYER.speed, move.y * PLAYER.speed);
+      body.setVelocity(move.x * PLAYER.speed * speedMult, move.y * PLAYER.speed * speedMult);
       this.setScale(1);
       this.setRotation(this.aim);
     }

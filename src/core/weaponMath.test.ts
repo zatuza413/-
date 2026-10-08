@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest';
 import { WEAPONS } from '../config/balance';
-import { beamRate, bounceRate, closeKillBonusAt, erasePoints, holdRate, pointRateAt } from './weaponMath';
+import { beamRate, bounceRate, closeKillBonusAt, damageAt, erasePoints, holdRate, pointRateAt } from './weaponMath';
 
 describe('距離によるポイント倍率', () => {
   const def = { pointRate: 1, pointFalloff: [[80, 2], [160, 1], [240, 0.3]] as Array<[number, number]> };
@@ -49,5 +49,14 @@ describe('武器ごとの倍率', () => {
   it('ロケット: 消した敵弾1発 +0.15、1発あたり上限 1.0', () => {
     expect(erasePoints(WEAPONS.rocket, 4)).toBeCloseTo(0.6);
     expect(erasePoints(WEAPONS.rocket, 20)).toBeCloseTo(1.0);
+  });
+});
+
+describe('レーザーの距離減衰', () => {
+  it('250px までは100%、600px で50%（間は直線）', () => {
+    expect(damageAt(WEAPONS.laser, 100)).toBe(1);
+    expect(damageAt(WEAPONS.laser, 425)).toBeCloseTo(0.75);
+    expect(damageAt(WEAPONS.laser, 600)).toBeCloseTo(0.5);
+    expect(damageAt(WEAPONS.handgun, 600)).toBe(1);
   });
 });

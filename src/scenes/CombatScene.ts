@@ -7,7 +7,7 @@ import { ITEMS, rollChestChoices, type ChestChoice, type ItemId } from '../core/
 import { aimAssist, CurseReturn, effectiveRate, killBonus, PerKeyCooldown, pushAway, rawRate } from '../core/rules';
 import { DamageQueue } from '../core/DamageQueue';
 import type { WeaponDef } from '../core/types';
-import { beamRate, bounceRate, erasePoints, holdRate, pointRateAt } from '../core/weaponMath';
+import { beamRate, bounceRate, damageAt, erasePoints, holdRate, pointRateAt } from '../core/weaponMath';
 import { Bullet, createBulletGroup, spawnBullet, tickBullets } from '../game/Bullets';
 import { CancelPresenter } from '../game/CancelPresenter';
 import { Controls } from '../game/Controls';
@@ -144,6 +144,10 @@ export abstract class CombatScene extends Phaser.Scene {
     return ['WASD 移動 / 左クリック 射撃 / 右クリック ダッシュ / R リロード / Q・E 武器切替'];
   }
   protected onDebugKey(_code: string): void {}
+  /** 戦闘中か。戦闘中でなければ速く歩ける（通路・クリア済みの部屋） */
+  protected isInCombat(): boolean {
+    return this.enemiesAlive > 0;
+  }
 
   init(data: { run?: RunState }): void {
     this.run = data.run ?? newRunState();
@@ -459,7 +463,7 @@ export abstract class CombatScene extends Phaser.Scene {
     const rate = beamRate(weapon, hits.length);
     for (const e of hits) {
       const dist = Phaser.Math.Distance.Between(this.player.x, this.player.y, e.x, e.y);
-      this.damageEnemy(e, weapon.damage * this.attackMult * dt, rate, dist, weapon);
+      this.damageEnemy(e, weapon.damage * damageAt(weapon, dist) * this.attackMult * dt, rate, dist, weapon);
     }
     const w = 3 + Math.min(hits.length, 4) * 1.5;
     g.lineStyle(w + 6, weapon.bulletColor, 0.18).lineBetween(sx, sy, exX, exY);
@@ -862,7 +866,7 @@ export abstract class CombatScene extends Phaser.Scene {
     }
 
     // 自機
-    this.player.tick(dt, this.controls.move, aim);
+    this.player.tick(dt, this.controls.move, aim, this.isInCombat() ? 1 : PLAYER.travelSpeedMult);
     this.updateHazards();
 
     // 射撃（ダッシュ中も可能）

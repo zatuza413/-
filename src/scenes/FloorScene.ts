@@ -233,6 +233,11 @@ export class FloorScene extends CombatScene {
     this.drawMinimap();
   }
 
+  /** 扉が閉まっている間だけ戦闘中（通路とクリア済みの部屋は速く歩ける） */
+  protected isInCombat(): boolean {
+    return this.fighting !== null;
+  }
+
   protected onDied(): void {
     telemetry.endRun({ cleared: false, died: true });
   }
