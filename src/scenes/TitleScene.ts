@@ -16,7 +16,7 @@ export class TitleScene extends Phaser.Scene {
       .text(width / 2, height / 2, '被弾上等。撃ち続けて生き残れ', { fontFamily: 'sans-serif', fontSize: '22px', color: '#ffffff' })
       .setOrigin(0.5);
     const start = this.add
-      .text(width / 2, height / 2 + 90, 'クリックでテスト部屋へ', { fontFamily: 'sans-serif', fontSize: '20px', color: '#9fe8ff' })
+      .text(width / 2, height / 2 + 90, 'タップ / クリックでテスト部屋へ', { fontFamily: 'sans-serif', fontSize: '20px', color: '#9fe8ff' })
       .setOrigin(0.5);
     this.tweens.add({ targets: start, alpha: 0.3, duration: 700, yoyo: true, repeat: -1 });
 

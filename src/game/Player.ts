@@ -17,8 +17,6 @@ export class Player extends Phaser.Physics.Arcade.Image {
   safeX = 0;
   safeY = 0;
 
-  private keys: Record<'W' | 'A' | 'S' | 'D', Phaser.Input.Keyboard.Key>;
-
   constructor(scene: Phaser.Scene, x: number, y: number) {
     super(scene, x, y, 'player');
     scene.add.existing(this);
@@ -30,34 +28,25 @@ export class Player extends Phaser.Physics.Arcade.Image {
     this.setDepth(10);
     this.safeX = x;
     this.safeY = y;
-    this.keys = scene.input.keyboard!.addKeys('W,A,S,D') as Player['keys'];
   }
 
   get isDashing(): boolean {
     return this.dashTime > 0;
   }
 
-  /** ダッシュを試みる。無敵も硬直もない */
-  tryDash(): boolean {
+  /** ダッシュを試みる。無敵も硬直もない。move は移動入力（長さ0なら照準方向へ） */
+  tryDash(move: Phaser.Math.Vector2): boolean {
     if (this.dashCooldown > 0 || this.isDashing) return false;
-    const move = this.readMove();
-    if (move.lengthSq() > 0) this.dashDir.copy(move);
+    if (move.lengthSq() > 0) this.dashDir.copy(move).normalize();
     else this.dashDir.setToPolar(this.aim, 1);
     this.dashTime = PLAYER.dash.duration;
     this.dashCooldown = PLAYER.dash.cooldown;
     return true;
   }
 
-  private readMove(): Phaser.Math.Vector2 {
-    const v = new Phaser.Math.Vector2(
-      (this.keys.D.isDown ? 1 : 0) - (this.keys.A.isDown ? 1 : 0),
-      (this.keys.S.isDown ? 1 : 0) - (this.keys.W.isDown ? 1 : 0),
-    );
-    return v.lengthSq() > 0 ? v.normalize() : v;
-  }
-
-  tick(dt: number, aimX: number, aimY: number): void {
-    this.aim = Phaser.Math.Angle.Between(this.x, this.y, aimX, aimY);
+  /** move: 移動入力（長さ0〜1。スティックの倒し具合で速度が変わる）、aim: 照準角 */
+  tick(dt: number, move: Phaser.Math.Vector2, aim: number): void {
+    this.aim = aim;
     this.dashCooldown = Math.max(0, this.dashCooldown - dt);
     const body = this.body as Phaser.Physics.Arcade.Body;
 
@@ -67,7 +56,6 @@ export class Player extends Phaser.Physics.Arcade.Image {
       this.setScale(1.15, 0.85);
       this.setRotation(Math.atan2(this.dashDir.y, this.dashDir.x));
     } else {
-      const move = this.readMove();
       body.setVelocity(move.x * PLAYER.speed, move.y * PLAYER.speed);
       this.setScale(1);
       this.setRotation(this.aim);

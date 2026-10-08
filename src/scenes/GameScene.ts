@@ -9,6 +9,7 @@ import { CancelPresenter } from '../game/CancelPresenter';
 import { Enemy } from '../game/Enemy';
 import type { EnemyContext } from '../game/enemyBehaviors';
 import { Player } from '../game/Player';
+import { Controls } from '../game/Controls';
 import { Sfx } from '../game/Sfx';
 import { WeaponSystem } from '../game/WeaponSystem';
 
@@ -21,6 +22,7 @@ interface SourceInfo {
 
 export class GameScene extends Phaser.Scene {
   private player!: Player;
+  private controls!: Controls;
   private queue!: DamageQueue;
   private presenter!: CancelPresenter;
   private weapons!: WeaponSystem;
@@ -182,23 +184,25 @@ export class GameScene extends Phaser.Scene {
   // ------------------------------------------------------------ 入力
 
   private bindInput(): void {
-    const kb = this.input.keyboard!;
-    kb.on('keydown-R', () => {
-      if (this.weapons.startReload()) Sfx.reload();
+    // Space（アクティブアイテム）は段階4で実装
+    this.controls = new Controls(this, {
+      dash: () => {
+        if (!this.dead && this.player.tryDash(this.controls.move)) Sfx.dash();
+      },
+      reload: () => {
+        if (!this.dead && this.weapons.startReload()) Sfx.reload();
+      },
+      switchWeapon: (d) => this.weapons.switch(d),
+      debugKey: (code) => {
+        // テスト用
+        if (this.dead) return;
+        if (code === 'Digit1') this.spawnEnemy('shooter');
+        else if (code === 'Digit2') this.spawnEnemy('charger');
+        else if (code === 'KeyH') this.helpText.setVisible(!this.helpText.visible);
+      },
     });
-    kb.on('keydown-Q', () => this.weapons.switch(-1));
-    kb.on('keydown-E', () => this.weapons.switch(1));
-    kb.on('keydown-SPACE', () => {
-      /* アクティブアイテムは段階4で実装 */
-    });
-    // テスト用
-    kb.on('keydown-ONE', () => !this.dead && this.spawnEnemy('shooter'));
-    kb.on('keydown-TWO', () => !this.dead && this.spawnEnemy('charger'));
-    kb.on('keydown-H', () => this.helpText.setVisible(!this.helpText.visible));
-    this.input.on('pointerdown', (p: Phaser.Input.Pointer) => {
-      if (this.dead) return;
-      if (p.rightButtonDown() && this.player.tryDash()) Sfx.dash();
-    });
+    this.controls.onModeChange = () => this.layoutHud();
+    this.layoutHud();
   }
 
   // ------------------------------------------------------------ 当たり
@@ -306,7 +310,7 @@ export class GameScene extends Phaser.Scene {
       `確定  時間切れ ${s.confirms.timeout} / 上限超過 ${s.confirms.overflow} / 即時 ${s.confirms.instant}`,
       `部屋クリアで消えた予告 ${s.roomClearWipes}`,
       '',
-      'クリックで再挑戦',
+      this.controls.touchMode ? 'タップで再挑戦' : 'クリックで再挑戦',
     ];
     this.add
       .text(width / 2, height / 2, lines.join('\n'), { fontFamily: 'sans-serif', fontSize: '22px', color: '#ffffff', align: 'center', lineSpacing: 8 })
@@ -322,15 +326,14 @@ export class GameScene extends Phaser.Scene {
     if (this.physics.world.isPaused) this.physics.world.resume();
 
     const dt = Math.min(deltaMs, 50) / 1000;
-    const pointer = this.input.activePointer;
-    const aim = pointer.positionToCamera(this.cameras.main) as Phaser.Math.Vector2;
+    this.controls.update(this.cameras.main, this.player.x, this.player.y);
 
     // 自機
-    this.player.tick(dt, aim.x, aim.y);
+    this.player.tick(dt, this.controls.move, this.controls.aim);
     this.updateHazards();
 
     // 射撃（ダッシュ中も可能）
-    const fire = this.weapons.tick(dt, pointer.leftButtonDown(), this.player.aim);
+    const fire = this.weapons.tick(dt, this.controls.fireHeld, this.player.aim);
     if (fire.autoReload) Sfx.reload();
     for (const shot of fire.shots) {
       const b = spawnBullet(this.playerBullets, 'pbullet');
@@ -455,7 +458,18 @@ export class GameScene extends Phaser.Scene {
       .setDepth(150);
   }
 
+  /** PC とタッチで HUD の配置を変える（タッチではボタンと重ならないように） */
+  private layoutHud(): void {
+    const touch = this.controls.touchMode;
+    const { width, height } = this.scale;
+    if (touch) this.ammoText.setPosition(width / 2, 12).setOrigin(0.5, 0);
+    else this.ammoText.setPosition(width - 16, height - 16).setOrigin(1, 1);
+    this.helpText.setVisible(!touch);
+  }
+
   private updateHud(): void {
+    this.controls.dashReady = 1 - this.player.dashCooldown / PLAYER.dash.cooldown;
+    this.controls.draw();
     const g = this.hud;
     g.clear();
     // ハート（半分単位）

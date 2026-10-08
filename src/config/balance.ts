@@ -13,6 +13,18 @@ export const VIEW = {
   height: 640,
 };
 
+/** スマホ用のタッチ操作（座標・半径は画面 960×640 基準） */
+export const TOUCH = {
+  /** スティックの最大の倒し幅 */
+  stickRadius: 60,
+  /** これ未満の倒し幅は無視する（右スティックは、これを超えると射撃） */
+  deadZone: 12,
+  /** ボタン配置（画面右下からの位置）と半径 */
+  dashButton: { right: 78, bottom: 78, radius: 50 },
+  reloadButton: { right: 175, bottom: 50, radius: 32 },
+  switchButton: { right: 50, top: 50, radius: 30 },
+};
+
 /** 自機 */
 export const PLAYER = {
   /** 最大HP（ハート半分の数。6 = ハート3つ） */
