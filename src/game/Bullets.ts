@@ -1,4 +1,5 @@
 import Phaser from 'phaser';
+import type { WeaponDef } from '../core/types';
 
 /** 自機・敵共通の弾 */
 export class Bullet extends Phaser.Physics.Arcade.Image {
@@ -7,16 +8,16 @@ export class Bullet extends Phaser.Physics.Arcade.Image {
   ownerId = -1;
   /** 残り寿命（秒） */
   life = 0;
-  /** 与ダメージ由来の相殺ポイント倍率（自機弾のみ） */
-  pointRate = 1;
+  /** 撃った武器（自機弾のみ。相殺ポイントの計算に使う） */
+  weapon: WeaponDef | null = null;
 
-  fire(x: number, y: number, angle: number, speed: number, opts: { damage: number; life: number; ownerId?: number; pointRate?: number; tint?: number; scale?: number; hitRadius: number }): void {
+  fire(x: number, y: number, angle: number, speed: number, opts: { damage: number; life: number; ownerId?: number; weapon?: WeaponDef; tint?: number; scale?: number; hitRadius: number }): void {
     this.enableBody(true, x, y, true, true);
     this.setRotation(angle);
     this.damage = opts.damage;
     this.life = opts.life;
     this.ownerId = opts.ownerId ?? -1;
-    this.pointRate = opts.pointRate ?? 1;
+    this.weapon = opts.weapon ?? null;
     this.setScale(opts.scale ?? 1);
     if (opts.tint !== undefined) this.setTint(opts.tint);
     else this.clearTint();

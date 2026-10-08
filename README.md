@@ -34,7 +34,10 @@ npm run build    # 型チェック + 本番ビルド
 
 - `src/config/balance.ts` — 調整用の数値すべて（武器・敵の定義も含む）
 - `src/core/DamageQueue.ts` — 相殺ロジック（描画から独立。`DamageQueue.test.ts` でテスト）
+- `src/core/floorGen.ts` — フロアの自動生成（描画から独立。`floorGen.test.ts` でテスト）
+- `src/core/weaponMath.ts` — 距離によるポイント倍率など武器の計算
 - `src/game/CancelPresenter.ts` — 相殺の演出（予告リング、確定の線、心音、倒せそう印など）
 - `src/game/Controls.ts` — 入力（PC のキーボード＋マウスと、スマホの仮想スティック）
 - `src/game/enemyBehaviors.ts` — 敵の行動。敵の追加は「行動関数 + balance.ts の定義」
-- `src/scenes/` — Boot（仮素材生成）/ Title / Game（現在はテスト部屋）
+- `src/scenes/` — Boot（仮素材生成）/ Title / Floor（本編）/ TestRoom（調整用）/ Clear
+  - `CombatScene.ts` が戦闘の共通部分。Floor と TestRoom はこれを継承して部屋の作り方と進行だけを書く

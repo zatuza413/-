@@ -2,7 +2,9 @@ import Phaser from 'phaser';
 import { VIEW } from './config/balance';
 import { BootScene } from './scenes/BootScene';
 import { TitleScene } from './scenes/TitleScene';
-import { GameScene } from './scenes/GameScene';
+import { ClearScene } from './scenes/ClearScene';
+import { FloorScene } from './scenes/FloorScene';
+import { TestRoomScene } from './scenes/TestRoomScene';
 import { Sfx } from './game/Sfx';
 
 const game = new Phaser.Game({
@@ -20,7 +22,7 @@ const game = new Phaser.Game({
     mode: Phaser.Scale.FIT,
     autoCenter: Phaser.Scale.CENTER_BOTH,
   },
-  scene: [BootScene, TitleScene, GameScene],
+  scene: [BootScene, TitleScene, FloorScene, TestRoomScene, ClearScene],
 });
 
 // 開発時のみ、コンソールから状態を確認できるようにする

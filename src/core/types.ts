@@ -1,6 +1,6 @@
 // 武器・敵などのデータ定義の型。数値そのものは src/config/balance.ts に置く。
 
-export type WeaponId = 'handgun';
+export type WeaponId = 'handgun' | 'shotgun';
 
 export interface WeaponDef {
   id: WeaponId;
@@ -28,6 +28,13 @@ export interface WeaponDef {
    * 単発の重い武器ほど高くして、範囲武器一強にならないようにする。
    */
   pointRate: number;
+  /**
+   * 敵との距離による pointRate の倍率（任意）。[距離px, 倍率] を距離の昇順で並べ、間は直線で補間する。
+   * 範囲武器を「張り付くほど相殺が溜まる」武器にするために使う。
+   */
+  pointFalloff?: Array<[number, number]>;
+  /** この距離以内で倒すと撃破ポイントにボーナスを足す（任意） */
+  closeKillBonus?: { range: number; points: number };
   /** 弾の見た目 */
   bulletRadius: number;
   bulletColor: number;

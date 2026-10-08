@@ -110,6 +110,44 @@ export const FX = {
   },
 };
 
+/** タイル1枚の大きさ (px) */
+export const TILE = 32;
+
+/** フロア */
+export const FLOOR = {
+  /** フロア数。最後のフロアのボス部屋をクリアするとゲームクリア */
+  count: 3,
+  /** 生成の設定（単位はタイル） */
+  gen: {
+    roomsMin: 10,
+    roomsMax: 15,
+    gridW: 7,
+    gridH: 7,
+    cellW: 36,
+    cellH: 28,
+    roomW: [16, 28] as [number, number],
+    roomH: [12, 20] as [number, number],
+    corridorWidth: 3,
+    extraLoopChance: 0.15,
+    treasureRooms: [1, 2] as [number, number],
+    shopRooms: 1,
+    hazardChance: 0.4,
+    hazardSize: [3, 5] as [number, number],
+  },
+  /** 戦闘部屋の敵の数: base + perFloor × (フロア-1) + 0〜random。ボス部屋は × bossRoomMultiplier */
+  enemies: { base: 3, perFloor: 1, random: 2, bossRoomMultiplier: 1.8 },
+  /** フロアごとに出る敵（敵ID の配列。重複させると出やすくなる） */
+  enemyPool: [
+    ['shooter', 'shooter', 'charger'],
+    ['shooter', 'charger', 'charger'],
+    ['shooter', 'shooter', 'charger', 'charger'],
+  ] as string[][],
+  /** 敵を自機からこれ以上離れた位置に出す (px) */
+  spawnMinDistance: 220,
+  /** 宝箱（段階4でアイテムに置き換える仮の中身）: 回復量（ハート半分単位） */
+  chestHeal: 2,
+};
+
 /** テスト部屋の設定（段階2用） */
 export const TEST_ROOM = {
   width: 1280,
@@ -143,10 +181,33 @@ export const WEAPONS: Record<WeaponId, WeaponDef> = {
     bulletRadius: 4,
     bulletColor: 0xfff27a,
   },
+  // 張り付き型: 遠くから撒いても相殺はほとんど溜まらない。近づいて殴り合うほど溜まる
+  shotgun: {
+    id: 'shotgun',
+    name: 'ショットガン',
+    damage: 7,
+    fireRate: 1.7,
+    pellets: 6,
+    spreadDeg: 38,
+    bulletSpeed: 520,
+    range: 300,
+    magazine: 6,
+    maxAmmo: 60,
+    reloadTime: 1.3,
+    pointRate: 1.0,
+    pointFalloff: [
+      [80, 2.0], // 80px以内: 2倍
+      [160, 1.0],
+      [240, 0.3], // 240px以上: 0.3倍
+    ],
+    closeKillBonus: { range: 100, points: 0.5 },
+    bulletRadius: 3,
+    bulletColor: 0xffb35a,
+  },
 };
 
 /** 初期装備 */
-export const STARTING_WEAPONS: WeaponId[] = ['handgun'];
+export const STARTING_WEAPONS: WeaponId[] = ['handgun', 'shotgun'];
 
 /** 敵弾の共通設定 */
 export const ENEMY_BULLET = {

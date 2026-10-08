@@ -1,5 +1,5 @@
 import Phaser from 'phaser';
-import { ENEMIES, ENEMY_BULLET, PLAYER } from '../config/balance';
+import { ENEMIES, ENEMY_BULLET, PLAYER, TILE } from '../config/balance';
 
 /** 仮素材（図形）のテクスチャを生成する。後で画像に差し替える前提 */
 export class BootScene extends Phaser.Scene {
@@ -52,6 +52,18 @@ export class BootScene extends Phaser.Scene {
     g.fillStyle(0x3a3a52, 1).fillRect(0, 0, 32, 32);
     g.lineStyle(2, 0x56567a, 1).strokeRect(1, 1, 30, 30);
     g.generateTexture('wall', 32, 32);
+
+    // フロアのタイルセット: 0 虚空 / 1 床 / 2 壁 / 3 閉じた扉（各 TILE px を横に並べる）
+    const T = TILE;
+    g.clear();
+    g.fillStyle(0x08080d, 1).fillRect(0, 0, T, T);
+    g.fillStyle(0x191926, 1).fillRect(T, 0, T, T);
+    g.lineStyle(1, 0x222233, 1).strokeRect(T + 0.5, 0.5, T - 1, T - 1);
+    g.fillStyle(0x3a3a52, 1).fillRect(T * 2, 0, T, T);
+    g.lineStyle(2, 0x56567a, 1).strokeRect(T * 2 + 1, 1, T - 2, T - 2);
+    g.fillStyle(0x7a2a3a, 1).fillRect(T * 3, 0, T, T);
+    g.lineStyle(2, 0xff5a7a, 1).strokeRect(T * 3 + 1, 1, T - 2, T - 2);
+    g.generateTexture('tiles', T * 4, T);
 
     g.destroy();
     this.scene.start('Title');

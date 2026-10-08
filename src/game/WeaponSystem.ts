@@ -50,6 +50,14 @@ export class WeaponSystem {
     return true;
   }
 
+  /** 全武器の予備弾を満タンにする（テスト部屋のウェーブ間など） */
+  refillAll(): void {
+    for (const s of this.slots) {
+      s.mag = s.def.magazine;
+      if (s.def.maxAmmo !== null) s.reserve = s.def.maxAmmo - s.def.magazine;
+    }
+  }
+
   /** マガジンに弾を足す（連鎖ボーナスの弾薬回復）。予備弾は消費しない */
   refill(ratio: number): void {
     const s = this.current;

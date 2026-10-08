@@ -58,6 +58,7 @@ export class CancelPresenter {
   private clock = 0;
   /** 予告ゲージの各スロットの「出現アニメ」 */
   private popTimes = new Map<number, number>();
+  private readonly unsubscribe: () => void;
 
   constructor(host: PresenterHost) {
     this.host = host;
@@ -69,10 +70,12 @@ export class CancelPresenter {
       .setOrigin(0)
       .setScrollFactor(0)
       .setDepth(100);
-    host.queue.on((e) => this.onEvent(e));
+    // キューはフロアをまたいで使い回すので、破棄時に購読を外す
+    this.unsubscribe = host.queue.on((e) => this.onEvent(e));
   }
 
   destroy(): void {
+    this.unsubscribe();
     this.ring.destroy();
     this.marks.destroy();
     this.flash.destroy();
@@ -396,7 +399,7 @@ export class CancelPresenter {
     }
   }
 
-  private floatText(x: number, y: number, s: string, color: string, size: number): void {
+  floatText(x: number, y: number, s: string, color: string, size: number): void {
     const t = this.scene.add
       .text(x, y, s, { fontFamily: 'sans-serif', fontSize: `${size}px`, fontStyle: 'bold', color, stroke: '#000', strokeThickness: 4 })
       .setOrigin(0.5)
