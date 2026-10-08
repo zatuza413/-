@@ -19,6 +19,8 @@ export interface PendingDamage {
   readonly kind: HitKind;
   /** 積まれた時刻（キュー内部の時計） */
   readonly createdAt: number;
+  /** 猶予の天秤で一度延長済みか */
+  graced: boolean;
 }
 
 export interface DamageQueueConfig {
@@ -31,6 +33,14 @@ export interface DamageQueueConfig {
   baseMaxStock: number;
   chainWindow: number;
   chainMin: number;
+  /** 連鎖の受付時間の上限（アイテム込み） */
+  chainWindowMax: number;
+  /** window 秒以内の連続相殺は maxSteps 段までしか連鎖を伸ばさない（フラグ） */
+  rapidChainLimit: { enabled: boolean; window: number; maxSteps: number };
+  /** 前借りの証文: 借金の上限 */
+  maxDebt: number;
+  /** 猶予の天秤: 次の1ポイントまでこの割合以上溜まっていれば、確定を delay 秒延ばす（1つの予告に1回） */
+  grace: { threshold: number; delay: number };
 }
 
 /** アイテムによる補正。上限は呼び出し側（アイテム側）で制限する前提だが、ここでも最低限クランプする */
@@ -39,10 +49,14 @@ export interface DamageQueueModifiers {
   timerBonus: number;
   /** ストック上限の追加 */
   stockBonus: number;
-  /** 連鎖に必要な数の減少。連鎖に必要な数は 1 未満にならない */
-  chainMinReduction: number;
+  /** 連鎖の受付時間の倍率（連鎖の鐘）。chainWindowMax を超えない */
+  chainWindowMult: number;
   /** ポイント獲得時に2倍になる確率 (0〜1) */
   doublePointChance: number;
+  /** 前借りの証文: 時間切れの瞬間、借金が上限未満なら確定せずに消し、借金を1増やす */
+  canBorrow: boolean;
+  /** 猶予の天秤を持っているか */
+  hasGrace: boolean;
 }
 
 export type DamageQueueEvent =
@@ -64,7 +78,13 @@ export type DamageQueueEvent =
   | { type: 'stockGained'; stock: number }
   | { type: 'chain'; count: number }
   | { type: 'chainEnded'; count: number }
-  | { type: 'roomCleared'; count: number };
+  | { type: 'roomCleared'; count: number }
+  /** 猶予の天秤で確定が延びた */
+  | { type: 'graced'; pending: PendingDamage }
+  /** 前借りで予告を消した（相殺にも数える） */
+  | { type: 'borrowed'; pending: PendingDamage; debt: number }
+  /** 得たポイントで借金を返した */
+  | { type: 'debtRepaid'; debt: number };
 
 export type DamageQueueListener = (e: DamageQueueEvent) => void;
 
@@ -84,8 +104,10 @@ export type HitResult = 'queued' | 'cancelledByStock' | 'overflow' | 'ignored';
 const DEFAULT_MODS: DamageQueueModifiers = {
   timerBonus: 0,
   stockBonus: 0,
-  chainMinReduction: 0,
+  chainWindowMult: 1,
   doublePointChance: 0,
+  canBorrow: false,
+  hasGrace: false,
 };
 
 export class DamageQueue {
@@ -103,6 +125,9 @@ export class DamageQueue {
   private _partial = 0;
   private _chainCount = 0;
   private lastCancelAt = -Infinity;
+  /** 0.1秒以内に続いた相殺の数（同時撃破の連鎖制限用） */
+  private burst = 0;
+  private _debt = 0;
 
   readonly stats: DamageQueueStats = {
     hits: 0,
@@ -162,7 +187,15 @@ export class DamageQueue {
     return Math.min(this.cfg.baseTimer + Math.max(0, this.mods.timerBonus), this.cfg.maxTimer);
   }
   get chainMin(): number {
-    return Math.max(1, this.cfg.chainMin - Math.max(0, this.mods.chainMinReduction));
+    return this.cfg.chainMin;
+  }
+  /** 連鎖の受付時間（連鎖の鐘込み、上限あり） */
+  get chainWindow(): number {
+    return Math.min(this.cfg.chainWindow * Math.max(1, this.mods.chainWindowMult), this.cfg.chainWindowMax);
+  }
+  /** 前借りの借金 */
+  get debt(): number {
+    return this._debt;
   }
   /** 進行中の相殺カウント（連鎖未成立も含む） */
   get chainCount(): number {
@@ -213,6 +246,7 @@ export class DamageQueue {
       sourceId,
       kind,
       createdAt: this.now,
+      graced: false,
     };
     this.insert(p);
     this.guardUntil = this.now + this.cfg.stackGuard;
@@ -262,6 +296,12 @@ export class DamageQueue {
   }
 
   private spendPoint(): void {
+    // 借金があれば返済が先
+    if (this._debt > 0) {
+      this._debt--;
+      this.emit({ type: 'debtRepaid', debt: this._debt });
+      return;
+    }
     if (this.items.length > 0) {
       this.cancelOne(false);
     } else if (this._stock < this.maxStock) {
@@ -275,17 +315,36 @@ export class DamageQueue {
   private cancelOne(viaStock: boolean): void {
     const p = this.items.shift();
     if (!p) return;
+    this.registerCancel();
+    // chainCount は更新済み（演出側が連鎖数で音程を変えられるように）
+    this.emit({ type: 'cancelled', pending: p, viaStock });
+    this.emitChain();
+  }
+
+  /** 相殺を数え、連鎖を進める。進んだら true */
+  private registerCancel(): boolean {
     this.stats.cancels++;
-    if (this.now - this.lastCancelAt <= this.cfg.chainWindow) {
-      this._chainCount++;
+    const gap = this.now - this.lastCancelAt;
+    const rl = this.cfg.rapidChainLimit;
+    const rapid = rl.enabled && gap <= rl.window;
+    this.burst = rapid ? this.burst + 1 : 1;
+    let advanced = true;
+    if (gap <= this.chainWindow) {
+      if (rapid && this.burst > rl.maxSteps) advanced = false;
+      else this._chainCount++;
     } else {
       this.endChain();
       this._chainCount = 1;
     }
     this.lastCancelAt = this.now;
-    // chainCount は更新済み（演出側が連鎖数で音程を変えられるように）
-    this.emit({ type: 'cancelled', pending: p, viaStock });
-    if (this._chainCount >= this.chainMin) {
+    this.chainAdvanced = advanced;
+    return advanced;
+  }
+
+  private chainAdvanced = false;
+
+  private emitChain(): void {
+    if (this.chainAdvanced && this._chainCount >= this.chainMin) {
       if (this._chainCount === this.chainMin) this.stats.chains++;
       this.stats.bestChain = Math.max(this.stats.bestChain, this._chainCount);
       this.emit({ type: 'chain', count: this._chainCount });
@@ -306,12 +365,30 @@ export class DamageQueue {
 
     // 時間切れ（残りの短い順に並んでいるので先頭から）
     while (this.items.length > 0 && this.items[0].remaining <= 0) {
-      const p = this.items.shift()!;
+      const p = this.items[0];
+      // 猶予の天秤: あと少しで1ポイントなら一度だけ延ばす（タイマー上限とは別枠）
+      if (this.mods.hasGrace && !p.graced && this._partial >= this.cfg.grace.threshold) {
+        p.graced = true;
+        p.remaining += this.cfg.grace.delay;
+        this.items.sort((a, b) => a.remaining - b.remaining);
+        this.emit({ type: 'graced', pending: p });
+        continue;
+      }
+      this.items.shift();
       p.remaining = 0;
+      // 前借りの証文: 借金が上限未満なら確定せずに消す
+      if (this.mods.canBorrow && this._debt < this.cfg.maxDebt) {
+        this._debt++;
+        this.registerCancel();
+        this.emit({ type: 'borrowed', pending: p, debt: this._debt });
+        this.emit({ type: 'cancelled', pending: p, viaStock: false });
+        this.emitChain();
+        continue;
+      }
       this.confirm('timeout', p, p.kind, p.sourceId, 1 - this._partial);
     }
 
-    if (this._chainCount > 0 && this.now - this.lastCancelAt > this.cfg.chainWindow) {
+    if (this._chainCount > 0 && this.now - this.lastCancelAt > this.chainWindow) {
       this.endChain();
     }
   }
@@ -335,6 +412,8 @@ export class DamageQueue {
     this._partial = 0;
     this._chainCount = 0;
     this.lastCancelAt = -Infinity;
+    this.burst = 0;
+    this._debt = 0;
     this.stats.hits = 0;
     this.stats.cancels = 0;
     this.stats.chains = 0;

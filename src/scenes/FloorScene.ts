@@ -122,6 +122,24 @@ export class FloorScene extends CombatScene {
     return false;
   }
 
+  private isFloorTile(x: number, y: number): boolean {
+    const L = this.layout;
+    const tx = Math.floor(x / TILE);
+    const ty = Math.floor(y / TILE);
+    if (tx < 0 || ty < 0 || tx >= L.width || ty >= L.height) return false;
+    const t = this.layer.getTileAt(tx, ty);
+    return !!t && t.index === T_FLOOR;
+  }
+
+  protected isOpenAt(x: number, y: number): boolean {
+    const r = 18;
+    return this.isFloorTile(x - r, y - r) && this.isFloorTile(x + r, y - r) && this.isFloorTile(x - r, y + r) && this.isFloorTile(x + r, y + r);
+  }
+
+  protected blocksSight(x: number, y: number): boolean {
+    return !this.isFloorTile(x, y);
+  }
+
   // ------------------------------------------------------------ 部屋
 
   private setDoors(room: RoomState, closed: boolean): void {
@@ -236,7 +254,7 @@ export class FloorScene extends CombatScene {
     const ch = 13;
     const gw = FLOOR.gen.gridW * cw;
     // タッチ操作では右上の武器ボタンを避ける
-    const ox = this.scale.width - gw - (this.controls.touchMode ? 96 : 14);
+    const ox = this.scale.width - gw - (this.controls.touchMode && !this.controls.buttonsInBar ? 96 : 14);
     const oy = 12;
     const known = (r: RoomState) => r.visited || r.spec.neighbors.some((n) => this.rooms[n].visited);
     const at = (r: RoomState) => ({ x: ox + r.spec.gx * cw, y: oy + r.spec.gy * ch });

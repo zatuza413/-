@@ -35,6 +35,8 @@ export interface RoomSpec {
   /** 扉のタイル（部屋の床のすぐ外側で、通路が通っている場所）。入ると閉まる */
   doors: Array<{ x: number; y: number }>;
   hazards: HazardSpec[];
+  /** 柱（遮蔽物）。タイルは壁になる */
+  pillars: TileRect[];
 }
 
 export interface FloorLayout {
@@ -70,6 +72,8 @@ export interface FloorGenConfig {
   hazardChance: number;
   /** ギミックの一辺（タイル） */
   hazardSize: [number, number];
+  /** 戦闘部屋に置く柱の数の範囲と一辺（タイル） */
+  pillars: { min: number; max: number; size: number };
 }
 
 const DIRS = [
@@ -165,7 +169,7 @@ export function generateFloor(rng: Rng, cfg: FloorGenConfig): FloorLayout {
     const cy = c.gy * cfg.cellH + Math.floor(cfg.cellH / 2);
     const rect = { x: cx - Math.floor(w / 2), y: cy - Math.floor(h / 2), w, h };
     fill(rect);
-    return { id: i, gx: c.gx, gy: c.gy, type: types[i], rect, neighbors: [...neighbors[i]].sort((a, b) => a - b), doors: [], hazards: [] };
+    return { id: i, gx: c.gx, gy: c.gy, type: types[i], rect, neighbors: [...neighbors[i]].sort((a, b) => a - b), doors: [], hazards: [], pillars: [] };
   });
 
   // 通路（部屋の中心を通る直線）
@@ -220,6 +224,35 @@ export function generateFloor(rng: Rng, cfg: FloorGenConfig): FloorLayout {
       kind: rng() < 0.5 ? 'fire' : 'pit',
       rect: { x: randInt(rng, xMin, xMax), y: randInt(rng, yMin, yMax), w: hw, h: hh },
     });
+  }
+
+  // 7. 柱（戦闘部屋に0〜3本。中央の十字＝通路の延長線と床ギミックには重ねない。柱同士も離す）
+  const overlaps = (a: TileRect, b: TileRect, gap: number) =>
+    a.x < b.x + b.w + gap && b.x < a.x + a.w + gap && a.y < b.y + b.h + gap && b.y < a.y + a.h + gap;
+  for (const room of rooms) {
+    if (room.type !== 'combat') continue;
+    const n = randInt(rng, cfg.pillars.min, cfg.pillars.max);
+    const ps = cfg.pillars.size;
+    const r = room.rect;
+    const band = half + 2;
+    const cx = r.x + Math.floor(r.w / 2);
+    const cy = r.y + Math.floor(r.h / 2);
+    for (let k = 0; k < n; k++) {
+      for (let tries = 0; tries < 30; tries++) {
+        const left = rng() < 0.5;
+        const top = rng() < 0.5;
+        const xMin = left ? r.x + 2 : cx + band + 1;
+        const xMax = left ? cx - band - ps : r.x + r.w - 2 - ps;
+        const yMin = top ? r.y + 2 : cy + band + 1;
+        const yMax = top ? cy - band - ps : r.y + r.h - 2 - ps;
+        if (xMax < xMin || yMax < yMin) continue;
+        const p = { x: randInt(rng, xMin, xMax), y: randInt(rng, yMin, yMax), w: ps, h: ps };
+        if (room.hazards.some((h) => overlaps(p, h.rect, 1)) || room.pillars.some((q) => overlaps(p, q, 2))) continue;
+        room.pillars.push(p);
+        for (let y = p.y; y < p.y + p.h; y++) for (let x = p.x; x < p.x + p.w; x++) tiles[y * width + x] = TILE_VOID;
+        break;
+      }
+    }
   }
 
   return { width, height, tiles, rooms, startId: 0, bossId };

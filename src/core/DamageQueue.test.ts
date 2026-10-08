@@ -11,6 +11,10 @@ const CFG: DamageQueueConfig = {
   baseMaxStock: 1,
   chainWindow: 1.5,
   chainMin: 2,
+  chainWindowMax: 2.5,
+  rapidChainLimit: { enabled: false, window: 0.1, maxSteps: 2 },
+  maxDebt: 1,
+  grace: { threshold: 0.8, delay: 0.5 },
 };
 
 function setup(cfg: Partial<DamageQueueConfig> = {}, rng?: () => number) {
@@ -250,13 +254,40 @@ describe('連鎖判定', () => {
     expect(q.chainCount).toBe(0);
   });
 
-  it('連鎖の鐘: 必要数を減らせるが1未満にはならない', () => {
+  it('連鎖の鐘: 受付時間 ×1.5（1.5秒 → 2.25秒）', () => {
     const { q, of } = setup();
-    q.setModifiers({ chainMinReduction: 5 });
-    expect(q.chainMin).toBe(1);
-    q.hit('bullet');
+    q.setModifiers({ chainWindowMult: 1.5 });
+    expect(q.chainWindow).toBeCloseTo(2.25);
+    expect(q.chainMin).toBe(2);
+    hitN(q, 2);
     q.addPoints(1);
-    expect(of('chain').map((e) => e.count)).toEqual([1]);
+    q.update(2.2);
+    q.addPoints(1);
+    expect(of('chain').map((e) => e.count)).toEqual([2]);
+  });
+
+  it('連鎖の受付時間は上限2.5秒を超えない', () => {
+    const { q } = setup();
+    q.setModifiers({ chainWindowMult: 3 });
+    expect(q.chainWindow).toBeCloseTo(2.5);
+  });
+
+  it('同時撃破の連鎖は残す（制限フラグはオフが初期状態）', () => {
+    const { q, of } = setup();
+    hitN(q, 3);
+    q.addPoints(3);
+    expect(of('chain').map((e) => e.count)).toEqual([2, 3]);
+  });
+
+  it('制限フラグをオンにすると、0.1秒以内の連続相殺は2段まで', () => {
+    const { q, of } = setup({ rapidChainLimit: { enabled: true, window: 0.1, maxSteps: 2 } });
+    hitN(q, 4);
+    q.addPoints(3); // 同時に3つ
+    expect(of('chain').map((e) => e.count)).toEqual([2]);
+    expect(q.stats.cancels).toBe(3);
+    q.update(0.5);
+    q.addPoints(1); // 間を空ければまた伸びる
+    expect(of('chain').map((e) => e.count)).toEqual([2, 3]);
   });
 
   it('ポイントが無駄になったものは連鎖に数えない', () => {
@@ -286,5 +317,95 @@ describe('部屋クリアで全消去', () => {
     q.addPoints(1);
     q.clearAll();
     expect(q.stock).toBe(1);
+  });
+});
+
+describe('前借りの証文', () => {
+  it('時間切れの瞬間に確定せず消し、借金を1負う', () => {
+    const { q, of } = setup();
+    q.setModifiers({ canBorrow: true });
+    q.hit('bullet');
+    q.update(3.01);
+    expect(of('confirmed')).toHaveLength(0);
+    expect(of('borrowed')).toHaveLength(1);
+    expect(q.debt).toBe(1);
+    expect(q.count).toBe(0);
+  });
+
+  it('借金は1まで（2つ目は確定する）', () => {
+    const { q, of } = setup();
+    q.setModifiers({ canBorrow: true });
+    hitN(q, 2, 0.31);
+    q.update(3);
+    expect(of('borrowed')).toHaveLength(1);
+    expect(of('confirmed')).toHaveLength(1);
+    expect(q.debt).toBe(1);
+  });
+
+  it('次に得たポイントは返済が先', () => {
+    const { q, of } = setup();
+    q.setModifiers({ canBorrow: true });
+    q.hit('bullet');
+    q.update(3.01);
+    q.update(1);
+    q.hit('bullet');
+    q.addPoints(1);
+    expect(q.debt).toBe(0);
+    expect(of('debtRepaid')).toHaveLength(1);
+    expect(q.count).toBe(1); // 返済に回ったので予告は残る
+    q.addPoints(1);
+    expect(q.count).toBe(0);
+  });
+});
+
+describe('猶予の天秤', () => {
+  it('80%以上溜まっていれば確定を0.5秒延ばす', () => {
+    const { q, of } = setup();
+    q.setModifiers({ hasGrace: true });
+    q.hit('bullet');
+    q.addPoints(0.85);
+    q.update(3.01);
+    expect(of('graced')).toHaveLength(1);
+    expect(of('confirmed')).toHaveLength(0);
+    q.addPoints(0.2);
+    expect(of('cancelled')).toHaveLength(1);
+  });
+
+  it('1つの予告につき1回まで', () => {
+    const { q, of } = setup();
+    q.setModifiers({ hasGrace: true });
+    q.hit('bullet');
+    q.addPoints(0.9);
+    q.update(3.01);
+    q.update(0.5);
+    expect(of('graced')).toHaveLength(1);
+    expect(of('confirmed')).toHaveLength(1);
+  });
+
+  it('80%未満なら延ばさない', () => {
+    const { q, of } = setup();
+    q.setModifiers({ hasGrace: true });
+    q.hit('bullet');
+    q.addPoints(0.79);
+    q.update(3.01);
+    expect(of('graced')).toHaveLength(0);
+    expect(of('confirmed')).toHaveLength(1);
+  });
+});
+
+describe('必ず残すもの', () => {
+  it('どの補正を最大にしても、予告の上限4と予告無敵0.3秒、即時確定は変わらない', () => {
+    const { q, of } = setup({}, () => 0);
+    q.setModifiers({ timerBonus: 99, stockBonus: 99, chainWindowMult: 99, doublePointChance: 1, canBorrow: true, hasGrace: true });
+    expect(q.maxPending).toBe(4);
+    q.hit('bullet');
+    expect(q.hit('bullet')).toBe('ignored');
+    q.update(0.31);
+    hitN(q, 3);
+    expect(q.count).toBe(4);
+    expect(q.hit('bullet')).toBe('overflow');
+    q.update(1);
+    expect(q.instant('pit')).toBe(true);
+    expect(of('confirmed').map((e) => e.reason)).toEqual(['overflow', 'instant']);
   });
 });

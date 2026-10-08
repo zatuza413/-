@@ -129,4 +129,35 @@ describe('フロア生成', () => {
     }
     expect(count).toBeGreaterThan(0);
   });
+
+  it('柱は戦闘部屋に0〜3本、部屋の中・中央の十字と床ギミックを避け、タイルは壁', () => {
+    let total = 0;
+    for (const seed of SEEDS) {
+      const f = gen(seed);
+      for (const r of f.rooms) {
+        if (r.type !== 'combat') {
+          expect(r.pillars).toHaveLength(0);
+          continue;
+        }
+        expect(r.pillars.length).toBeLessThanOrEqual(3);
+        const c = center(f, r.id);
+        for (const p of r.pillars) {
+          total++;
+          expect(p.x).toBeGreaterThanOrEqual(r.rect.x + 2);
+          expect(p.y).toBeGreaterThanOrEqual(r.rect.y + 2);
+          expect(p.x + p.w).toBeLessThanOrEqual(r.rect.x + r.rect.w - 2);
+          expect(p.y + p.h).toBeLessThanOrEqual(r.rect.y + r.rect.h - 2);
+          const crossesV = p.x <= c.x + 2 && c.x - 2 < p.x + p.w;
+          const crossesH = p.y <= c.y + 2 && c.y - 2 < p.y + p.h;
+          expect(crossesV || crossesH).toBe(false);
+          for (const h of r.hazards) {
+            const hit = p.x < h.rect.x + h.rect.w && h.rect.x < p.x + p.w && p.y < h.rect.y + h.rect.h && h.rect.y < p.y + p.h;
+            expect(hit).toBe(false);
+          }
+          expect(f.tiles[p.y * f.width + p.x]).toBe(0);
+        }
+      }
+    }
+    expect(total).toBeGreaterThan(0);
+  });
 });

@@ -340,10 +340,21 @@ export class CancelPresenter {
   }
 
   /** 4. 倒せそうな敵への印。敵リストは呼び出し側が渡す */
-  drawKillMarks(targets: Array<{ x: number; y: number; r: number }>): void {
+  drawKillMarks(targets: Array<{ x: number; y: number; r: number }>, nemesis: Array<{ x: number; y: number; r: number }> = []): void {
     const g = this.marks;
     g.clear();
     if (this.host.queue.count === 0) return;
+    // 仇の印: 予告を作った敵を赤い破線の輪で囲む（狙撃撃破でボーナスが上がる）
+    for (const t of nemesis) {
+      const r = t.r + 9;
+      g.lineStyle(2, 0xff4466, 0.9);
+      for (let i = 0; i < 8; i++) {
+        const a0 = (i / 8) * Math.PI * 2 + this.clock * 1.5;
+        g.beginPath();
+        g.arc(t.x, t.y, r, a0, a0 + Math.PI / 8);
+        g.strokePath();
+      }
+    }
     const bob = Math.sin(this.clock * 8) * 2;
     for (const t of targets) {
       const y = t.y - t.r - 10 + bob;

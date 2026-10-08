@@ -2,10 +2,11 @@
 // 部屋の作り方と進行は派生クラス（TestRoomScene / FloorScene）が決める。
 
 import Phaser from 'phaser';
-import { CANCEL, CHAIN, ENEMIES, ENEMY_BULLET, FX, PLAYER, STARTING_WEAPONS } from '../config/balance';
+import { CANCEL, CHAIN, CONTACT, ENEMIES, ENEMY_BULLET, FX, PLAYER, POINTS, STARTING_WEAPONS, TOUCH } from '../config/balance';
+import { aimAssist, effectiveRate, killBonus, PerKeyCooldown, pushAway, rawRate } from '../core/rules';
 import { DamageQueue } from '../core/DamageQueue';
 import type { WeaponDef } from '../core/types';
-import { closeKillBonusAt, pointRateAt } from '../core/weaponMath';
+import { pointRateAt } from '../core/weaponMath';
 import { Bullet, createBulletGroup, spawnBullet, tickBullets } from '../game/Bullets';
 import { CancelPresenter } from '../game/CancelPresenter';
 import { Controls } from '../game/Controls';
@@ -80,6 +81,8 @@ export abstract class CombatScene extends Phaser.Scene {
   /** 計測するか（本編のみ。テスト部屋では記録しない） */
   protected recordTelemetry = false;
   private unsubscribeQueue: (() => void) | null = null;
+  /** 同じ敵からの接触は1秒に1回まで */
+  private contactCooldown = new PerKeyCooldown(CONTACT.cooldown);
 
   // HUD
   private hud!: Phaser.GameObjects.Graphics;
@@ -119,6 +122,7 @@ export abstract class CombatScene extends Phaser.Scene {
     this.attackBuff = 0;
     this.attackBuffTime = 0;
     this.hitstopUntil = 0;
+    this.contactCooldown.clear();
 
     this.queue = this.run.queue;
     this.weapons = this.run.weapons;
@@ -204,9 +208,30 @@ export abstract class CombatScene extends Phaser.Scene {
     let p = { x: area.centerX, y: area.centerY };
     for (let i = 0; i < 40; i++) {
       p = { x: Phaser.Math.Between(area.x, area.right), y: Phaser.Math.Between(area.y, area.bottom) };
-      if (!this.inHazard(p.x, p.y, 24) && Phaser.Math.Distance.Between(p.x, p.y, this.player.x, this.player.y) >= minDist) break;
+      if (this.isOpenAt(p.x, p.y) && !this.inHazard(p.x, p.y, 24) && Phaser.Math.Distance.Between(p.x, p.y, this.player.x, this.player.y) >= minDist) break;
     }
     return p;
+  }
+
+  /** (x, y) が壁・柱でない（敵を出せる）か。派生クラスが地形に合わせて上書きする */
+  protected isOpenAt(_x: number, _y: number): boolean {
+    return true;
+  }
+
+  /** (x, y) が視線を遮るか（壁・柱） */
+  protected blocksSight(_x: number, _y: number): boolean {
+    return false;
+  }
+
+  /** 2点の間に壁・柱が無いか */
+  hasLineOfSight(x1: number, y1: number, x2: number, y2: number): boolean {
+    const d = Math.hypot(x2 - x1, y2 - y1);
+    const steps = Math.ceil(d / 12);
+    for (let i = 1; i < steps; i++) {
+      const t = i / steps;
+      if (this.blocksSight(x1 + (x2 - x1) * t, y1 + (y2 - y1) * t)) return false;
+    }
+    return true;
   }
 
   protected spawnEnemy(id: string, x: number, y: number): Enemy {
@@ -255,7 +280,7 @@ export abstract class CombatScene extends Phaser.Scene {
     // 与ダメージ由来のポイント（倒しきれなくても少し溜まる）。距離で倍率が変わる武器もある
     const dist = Phaser.Math.Distance.Between(this.player.x, this.player.y, e.x, e.y);
     const dealt = Math.min(b.damage, Math.max(0, e.hp));
-    const rate = weapon ? pointRateAt(weapon, dist) : 1;
+    const rate = this.pointRate(weapon ? pointRateAt(weapon, dist) : 1);
     this.gainPoints((dealt / CANCEL.damagePerPoint) * rate, dist, false);
     if (e.damage(b.damage)) this.killEnemy(e, weapon, dist);
   }
@@ -273,8 +298,15 @@ export abstract class CombatScene extends Phaser.Scene {
       const c = this.add.circle(e.x, e.y, 3, e.def.color).setDepth(6);
       this.tweens.add({ targets: c, x: e.x + Math.cos(a) * 40, y: e.y + Math.sin(a) * 40, alpha: 0, duration: 300, onComplete: () => c.destroy() });
     }
-    const bonus = closeKillBonusAt(weapon, dist);
-    if (bonus > 0) this.presenter.floatText(e.x, e.y - 18, `至近 +${bonus}`, '#ffb35a', 15);
+    // 撃破ボーナス（倍率はかけない）: 至近 / 狙撃 / 仇の狙撃
+    const isNemesis = this.queue.pending.some((p) => p.sourceId === e.uid);
+    const kb = killBonus({ dist, weapon, isNemesis }, POINTS.snipe);
+    const bonus = kb.bonus;
+    if (kb.kind) {
+      const label = kb.kind === 'close' ? '至近' : kb.kind === 'nemesis' ? '仇討ち' : '狙撃';
+      this.presenter.floatText(e.x, e.y - 18, `${label} +${bonus}`, kb.kind === 'close' ? '#ffb35a' : '#9fe8ff', 15);
+    }
+    if (this.recordTelemetry && (kb.kind === 'snipe' || kb.kind === 'nemesis')) telemetry.snipeKill();
     e.destroy();
     this.gainPoints((e.def.elite ? CANCEL.killPoints.elite : CANCEL.killPoints.normal) + bonus, dist, true);
     this.onEnemyKilled(e);
@@ -289,8 +321,23 @@ export abstract class CombatScene extends Phaser.Scene {
 
   private onEnemyContact(e: Enemy): void {
     if (this.dead || e.isSpawning || e.stun > 0 || !e.contactActive) return;
+    // 同じ敵からは1秒に1回まで。接触したら自機を押し返す
+    if (!this.contactCooldown.tryUse(e.uid, this.time.now / 1000)) return;
+    const v = pushAway(this.player.x, this.player.y, e.x, e.y, CONTACT.push);
+    this.player.push(v.x, v.y, CONTACT.pushTime);
+    if (e.def.noContactDamage) return;
     const r = this.queue.hit('contact', e.uid);
     if (r !== 'ignored') this.recordHit(e.uid);
+  }
+
+  /** レリックによるポイント倍率の加算（+0.5 なら 0.5）。派生クラス・アイテムが上書きする */
+  protected relicAdds(): number[] {
+    return [];
+  }
+
+  /** 与ダメージ由来のポイント倍率: 武器の倍率 × (1 + レリック加算) を上限つきで */
+  protected pointRate(weaponRate: number): number {
+    return effectiveRate(rawRate(weaponRate, this.relicAdds()), POINTS.softcap);
   }
 
   /** 相殺ポイントを得る（計測の距離帯も記録） */
@@ -404,8 +451,15 @@ export abstract class CombatScene extends Phaser.Scene {
     if (this.recordTelemetry) telemetry.tick(dt);
     this.controls.update(this.cameras.main, this.player.x, this.player.y);
 
+    // スマホだけ照準補正（遠くの敵に少し吸い付く）
+    let aim = this.controls.aim;
+    if (this.controls.touchMode && TOUCH.aimAssist.enabled) {
+      const targets = (this.enemies.getChildren() as Enemy[]).filter((e) => e.active && !e.isSpawning);
+      aim = aimAssist(aim, this.player.x, this.player.y, targets, TOUCH.aimAssist.minDist, (TOUCH.aimAssist.maxAngleDeg * Math.PI) / 180);
+    }
+
     // 自機
-    this.player.tick(dt, this.controls.move, this.controls.aim);
+    this.player.tick(dt, this.controls.move, aim);
     this.updateHazards();
 
     // 射撃（ダッシュ中も可能）
@@ -462,7 +516,9 @@ export abstract class CombatScene extends Phaser.Scene {
     this.queue.update(dt);
     if (this.dead) return;
     this.presenter.update(dt);
-    this.presenter.drawKillMarks(killable);
+    const nemesisIds = new Set(this.queue.pending.map((p) => p.sourceId));
+    const nemesis = (this.enemies.getChildren() as Enemy[]).filter((e) => e.active && nemesisIds.has(e.uid)).map((e) => ({ x: e.x, y: e.y, r: e.def.radius }));
+    this.presenter.drawKillMarks(killable, nemesis);
 
     this.updateWorld(dt);
     if (this.dead || !this.sys.isActive()) return;

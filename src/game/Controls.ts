@@ -2,7 +2,8 @@
 // タッチ操作:
 //   画面左半分をドラッグ → 移動スティック（触れた場所に出る）
 //   画面右半分をドラッグ → 照準スティック。倒している間は射撃
-//   右下のボタン → ダッシュ / リロード、右上 → 武器切替
+//   ボタン（ダッシュ / リロード / 武器切替）→ 右の黒帯。黒帯が狭い機種では画面の右端
+//   ボタンは DOM 要素（キャンバスの外の黒帯にも置けるように）
 // 最後に触った入力（タッチかマウスか）で表示を切り替える。
 // タッチは Phaser を通さず DOM の touch イベントをページ全体で直接読む。
 // （Phaser はキャンバス外の指の移動を無視するため、横長スマホの左右の黒帯に
@@ -22,13 +23,7 @@ interface Stick {
 
 type ButtonId = 'dash' | 'reload' | 'switch';
 
-interface Button {
-  id: ButtonId;
-  x: number;
-  y: number;
-  r: number;
-  label: string;
-}
+const BUTTON_LABEL: Record<ButtonId, string> = { dash: 'ダッシュ', reload: 'リロード', switch: '武器' };
 
 export interface ControlHandlers {
   dash(): void;
@@ -49,20 +44,23 @@ export class Controls {
   fireHeld = false;
   /** ダッシュボタンのクールダウン表示用 (0〜1、1 で使用可) */
   dashReady = 1;
+  /** ボタンが黒帯に置かれているか（false なら画面の中に重なっている） */
+  buttonsInBar = false;
 
   private readonly scene: Phaser.Scene;
   private readonly handlers: ControlHandlers;
   private readonly keys: Record<'W' | 'A' | 'S' | 'D', Phaser.Input.Keyboard.Key>;
   private moveStick: Stick | null = null;
   private aimStick: Stick | null = null;
-  private readonly buttons: Button[];
+  /** ボタン（DOM）と、その中心のページ座標・直径 */
+  private readonly buttons = new Map<ButtonId, { el: HTMLDivElement; x: number; y: number; size: number }>();
+  private readonly buttonLayer: HTMLDivElement;
   /** ボタンを押している指（Touch.identifier → ボタン） */
   private pressed = new Map<number, ButtonId>();
   /** 押している指の最新のページ座標（Touch.identifier → 座標） */
   private touches = new Map<number, { pageX: number; pageY: number }>();
   private readonly domListeners: Array<[string, (e: TouchEvent) => void]> = [];
   private readonly gfx: Phaser.GameObjects.Graphics;
-  private readonly labels: Phaser.GameObjects.Text[] = [];
   /** タッチモードの表示が変わったとき */
   onModeChange?: (touch: boolean) => void;
 
@@ -90,24 +88,36 @@ export class Controls {
       }
     });
 
-    const { width, height } = scene.scale;
-    const T = TOUCH;
-    this.buttons = [
-      { id: 'dash', x: width - T.dashButton.right, y: height - T.dashButton.bottom, r: T.dashButton.radius, label: 'ダッシュ' },
-      { id: 'reload', x: width - T.reloadButton.right, y: height - T.reloadButton.bottom, r: T.reloadButton.radius, label: 'リロード' },
-      { id: 'switch', x: width - T.switchButton.right, y: T.switchButton.top, r: T.switchButton.radius, label: '武器' },
-    ];
-
     this.gfx = scene.add.graphics().setScrollFactor(0).setDepth(160);
-    for (const b of this.buttons) {
-      this.labels.push(
-        scene.add
-          .text(b.x, b.y, b.label, { fontFamily: 'sans-serif', fontSize: b.r > 40 ? '17px' : '13px', fontStyle: 'bold', color: '#ffffff' })
-          .setOrigin(0.5)
-          .setScrollFactor(0)
-          .setDepth(161),
-      );
+
+    // ボタン（DOM）。タッチはページ全体の touch イベントで判定するので、要素自体は触れない
+    this.buttonLayer = document.createElement('div');
+    this.buttonLayer.style.cssText = 'position:fixed;inset:0;pointer-events:none;z-index:5;';
+    for (const id of ['dash', 'reload', 'switch'] as ButtonId[]) {
+      const size = TOUCH.buttonSize[id];
+      const el = document.createElement('div');
+      el.textContent = BUTTON_LABEL[id];
+      el.style.cssText = [
+        'position:absolute',
+        `width:${size}px`,
+        `height:${size}px`,
+        'margin-left:' + -size / 2 + 'px',
+        'margin-top:' + -size / 2 + 'px',
+        'border-radius:50%',
+        'border:2px solid rgba(255,255,255,0.45)',
+        'background:rgba(255,255,255,0.12)',
+        'color:#fff',
+        `font:bold ${id === 'dash' ? 13 : 11}px sans-serif`,
+        'white-space:nowrap',
+        'display:flex',
+        'align-items:center',
+        'justify-content:center',
+        'user-select:none',
+      ].join(';');
+      this.buttonLayer.appendChild(el);
+      this.buttons.set(id, { el, x: 0, y: 0, size });
     }
+    document.body.appendChild(this.buttonLayer);
 
     // マウス（右クリックでダッシュ）
     scene.input.on('pointerdown', (p: Phaser.Input.Pointer) => {
@@ -135,6 +145,7 @@ export class Controls {
   }
 
   destroy(): void {
+    this.buttonLayer.remove();
     for (const [type, fn] of this.domListeners) window.removeEventListener(type, fn as EventListener);
     this.domListeners.length = 0;
   }
@@ -161,18 +172,19 @@ export class Controls {
   private onTouchStart(e: TouchEvent): void {
     if (!this.scene.sys.isActive()) return;
     this.setTouchMode(true);
+    this.layoutButtons();
     for (const t of Array.from(e.changedTouches)) {
       this.touches.set(t.identifier, { pageX: t.pageX, pageY: t.pageY });
-      this.onFingerDown(t.identifier, this.toGame(t));
+      this.onFingerDown(t.identifier, t.clientX, t.clientY, this.toGame(t));
     }
   }
 
-  private onFingerDown(id: number, p: { x: number; y: number }): void {
-    const btn = this.buttons.find((b) => Phaser.Math.Distance.Between(p.x, p.y, b.x, b.y) <= b.r + 8);
-    if (btn) {
-      this.pressed.set(id, btn.id);
-      if (btn.id === 'dash') this.handlers.dash();
-      else if (btn.id === 'reload') this.handlers.reload();
+  private onFingerDown(id: number, cx: number, cy: number, p: { x: number; y: number }): void {
+    for (const [bid, b] of this.buttons) {
+      if (Math.hypot(cx - b.x, cy - b.y) > b.size / 2 + 8) continue;
+      this.pressed.set(id, bid);
+      if (bid === 'dash') this.handlers.dash();
+      else if (bid === 'reload') this.handlers.reload();
       else this.handlers.switchWeapon(1);
       return;
     }
@@ -243,6 +255,35 @@ export class Controls {
     }
   }
 
+  /**
+   * ボタンの位置を決める。右の黒帯が十分広ければ黒帯に、狭ければ画面の右端の内側に置く。
+   * 座標はページ（CSS px）。
+   */
+  private layoutButtons(): void {
+    const rect = this.scene.game.canvas.getBoundingClientRect();
+    const bar = window.innerWidth - rect.right;
+    const S = TOUCH.buttonSize;
+    const m = TOUCH.inCanvasMargin;
+    const place = (id: ButtonId, x: number, y: number) => {
+      const b = this.buttons.get(id)!;
+      b.x = x;
+      b.y = y;
+      b.el.style.left = `${x}px`;
+      b.el.style.top = `${y}px`;
+    };
+    this.buttonsInBar = bar >= S.dash + TOUCH.barPadding * 2;
+    if (this.buttonsInBar) {
+      const cx = rect.right + bar / 2;
+      place('dash', cx, rect.bottom - m - S.dash / 2);
+      place('reload', cx, rect.bottom - m * 2 - S.dash - S.reload / 2);
+      place('switch', cx, rect.top + m + S.switch / 2);
+    } else {
+      place('dash', rect.right - m - S.dash / 2, rect.bottom - m - S.dash / 2);
+      place('reload', rect.right - m * 2 - S.dash - S.reload / 2, rect.bottom - m - S.reload / 2);
+      place('switch', rect.right - m - S.switch / 2, rect.top + m + S.switch / 2);
+    }
+  }
+
   /** スティックの倒し具合（長さ 0〜1）。デッドゾーン内なら null */
   private stickVector(s: Stick | null): Phaser.Math.Vector2 | null {
     if (!s) return null;
@@ -256,7 +297,7 @@ export class Controls {
   draw(): void {
     const g = this.gfx;
     g.clear();
-    for (const l of this.labels) l.setVisible(this.touchMode);
+    this.buttonLayer.style.display = this.touchMode ? 'block' : 'none';
     if (!this.touchMode) return;
 
     for (const [s, col] of [
@@ -277,17 +318,14 @@ export class Controls {
       g.fillStyle(col, 0.5).fillCircle(bx + dx * k, by + dy * k, 24);
     }
 
+    this.layoutButtons();
     const pressedIds = new Set(this.pressed.values());
-    for (const b of this.buttons) {
-      const down = pressedIds.has(b.id);
-      g.fillStyle(0xffffff, down ? 0.3 : 0.12).fillCircle(b.x, b.y, b.r);
-      g.lineStyle(2, 0xffffff, 0.45).strokeCircle(b.x, b.y, b.r);
-      if (b.id === 'dash' && this.dashReady < 1) {
+    for (const [id, b] of this.buttons) {
+      b.el.style.background = pressedIds.has(id) ? 'rgba(255,255,255,0.3)' : 'rgba(255,255,255,0.12)';
+      if (id === 'dash' && this.dashReady < 1) {
         // クールダウン中は時計回りに埋まる
-        g.lineStyle(5, 0x9fe8ff, 0.9);
-        g.beginPath();
-        g.arc(b.x, b.y, b.r - 4, -Math.PI / 2, -Math.PI / 2 + Math.PI * 2 * this.dashReady);
-        g.strokePath();
+        const deg = Math.round(this.dashReady * 360);
+        b.el.style.background = `conic-gradient(rgba(159,232,255,0.55) ${deg}deg, rgba(255,255,255,0.08) ${deg}deg)`;
       }
     }
   }

@@ -53,6 +53,8 @@ export interface EnemyDef {
   color: number;
   /** エリートは撃破時の相殺ポイントが多い */
   elite: boolean;
+  /** 接触ダメージが無い（ボス本体など。押し出しだけ行う） */
+  noContactDamage?: boolean;
   /** 行動ごとの追加パラメータ（behavior ごとに意味が変わる） */
   params: Record<string, number>;
 }

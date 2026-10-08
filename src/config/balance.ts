@@ -8,21 +8,46 @@ import type { EnemyDef, WeaponDef, WeaponId } from '../core/types';
 
 /** 画面・ワールド */
 export const VIEW = {
-  /** 画面の幅・高さ */
+  /** 画面の幅・高さ（論理解像度）。16:9 固定で、機種によらず見える広さを同じにする（仮） */
   width: 960,
-  height: 640,
+  height: 540,
 };
 
-/** スマホ用のタッチ操作（座標・半径は画面 960×640 基準） */
+/** スマホ用のタッチ操作（スティックは画面 960×540 基準、ボタンは CSS px） */
 export const TOUCH = {
   /** スティックの最大の倒し幅 */
   stickRadius: 60,
   /** これ未満の倒し幅は無視する（右スティックは、これを超えると射撃） */
   deadZone: 12,
-  /** ボタン配置（画面右下からの位置）と半径 */
-  dashButton: { right: 78, bottom: 78, radius: 50 },
-  reloadButton: { right: 175, bottom: 50, radius: 32 },
-  switchButton: { right: 50, top: 50, radius: 30 },
+  /** ボタンの直径（CSS px）。右の黒帯がダッシュボタン＋barPadding×2 より広ければ黒帯に置く */
+  buttonSize: { dash: 64, reload: 50, switch: 46 },
+  /** 黒帯に置くときの左右の余白（CSS px） */
+  barPadding: 4,
+  /** 黒帯に置けないときに、画面の右端から内側へ置く距離（CSS px） */
+  inCanvasMargin: 16,
+  /** スマホの照準補正: この距離以上離れた敵に、照準のずれがこの角度以内なら吸い付く（仮） */
+  aimAssist: { enabled: true, minDist: 200, maxAngleDeg: 3 },
+};
+
+/** 接触ダメージ */
+export const CONTACT = {
+  /** 同じ敵からの接触被弾はこの秒数に1回まで */
+  cooldown: 1.0,
+  /** 接触したら自機をこの距離だけ押し返す (px) */
+  push: 40,
+  /** 押し返しにかける時間（秒） */
+  pushTime: 0.1,
+};
+
+/** 相殺ポイントの倍率と撃破ボーナス */
+export const POINTS = {
+  /**
+   * 実効倍率の上限。生の倍率 r（武器 × (1 + レリック加算の合計)）から:
+   * r ≤ knee1 → r / knee1〜knee2 → 傾き slope2 / knee2〜 → 傾き slope3 / 最大 max
+   */
+  softcap: { knee1: 2.0, knee2: 3.0, slope2: 0.5, slope3: 0.25, max: 4.0 },
+  /** 狙撃撃破: 自機からこの距離以上の敵を倒すと撃破ポイントに加算 */
+  snipe: { range: 300, bonus: 0.5, /** 倒した敵が「仇」（予告を作った敵）なら代わりにこの値 */ nemesisBonus: 0.75 },
 };
 
 /** 自機 */
@@ -63,6 +88,14 @@ export const CANCEL = {
   baseMaxStock: 1,
   /** この秒数以内に次の相殺が起きると連鎖が続く */
   chainWindow: 1.5,
+  /** 連鎖の受付時間の上限（連鎖の鐘込み） */
+  chainWindowMax: 2.5,
+  /** 同時撃破の連鎖を制限するフラグ: window 秒以内の連続相殺は maxSteps 段までしか連鎖を伸ばさない */
+  rapidChainLimit: { enabled: false, window: 0.1, maxSteps: 2 },
+  /** 前借りの証文: 借金の上限 */
+  maxDebt: 1,
+  /** 猶予の天秤: 次の1ポイントまで threshold 以上溜まっていれば確定を delay 秒延ばす（1つの予告に1回、タイマー上限とは別枠） */
+  grace: { threshold: 0.8, delay: 0.5 },
   /** 連鎖と呼ぶのに必要な相殺数 */
   chainMin: 2,
   /** 撃破時の相殺ポイント */
@@ -133,6 +166,8 @@ export const FLOOR = {
     shopRooms: 1,
     hazardChance: 0.4,
     hazardSize: [3, 5] as [number, number],
+    /** 戦闘部屋の柱（2×2タイル）の数（仮）。狙撃エリートの隠れ場所・跳弾の壁・射線を切る遊び */
+    pillars: { min: 0, max: 3, size: 2 },
   },
   /** 戦闘部屋の敵の数: base + perFloor × (フロア-1) + 0〜random。ボス部屋は × bossRoomMultiplier */
   enemies: { base: 3, perFloor: 1, random: 2, bossRoomMultiplier: 1.8 },

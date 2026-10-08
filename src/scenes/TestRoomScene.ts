@@ -8,6 +8,7 @@ export class TestRoomScene extends CombatScene {
   private waveIndex = 0;
   private waveTimer = 0;
   private waveActive = false;
+  private wallRects: Phaser.Geom.Rectangle[] = [];
 
   constructor() {
     super('TestRoom');
@@ -25,11 +26,13 @@ export class TestRoomScene extends CombatScene {
     this.add.grid(W / 2, H / 2, W, H, 64, 64, 0x191926, 1, 0x222233, 1).setDepth(-10);
 
     const walls = this.physics.add.staticGroup();
+    this.wallRects = [];
     const T = 32;
     const wall = (x: number, y: number, w: number, h: number) => {
       const r = this.add.tileSprite(x + w / 2, y + h / 2, w, h, 'wall');
       this.physics.add.existing(r, true);
       walls.add(r);
+      this.wallRects.push(new Phaser.Geom.Rectangle(x, y, w, h));
     };
     wall(0, 0, W, T);
     wall(0, H - T, W, T);
@@ -73,6 +76,14 @@ export class TestRoomScene extends CombatScene {
       this.queue.clearAll();
       this.weapons.refillAll();
     }
+  }
+
+  protected isOpenAt(x: number, y: number): boolean {
+    return !this.wallRects.some((r) => Phaser.Geom.Rectangle.Inflate(Phaser.Geom.Rectangle.Clone(r), 20, 20).contains(x, y));
+  }
+
+  protected blocksSight(x: number, y: number): boolean {
+    return this.wallRects.some((r) => r.contains(x, y));
   }
 
   protected restartAfterDeath(): void {
