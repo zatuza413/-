@@ -2,11 +2,11 @@
 // 部屋の作り方と進行は派生クラス（TestRoomScene / FloorScene）が決める。
 
 import Phaser from 'phaser';
-import { CANCEL, CHAIN, CONTACT, ENEMIES, ENEMY_BULLET, FX, MORTAR, PLAYER, POINTS, STARTING_WEAPONS, TOUCH } from '../config/balance';
+import { CANCEL, CHAIN, CONTACT, ENEMIES, ENEMY_BULLET, FX, ITEM_NUM, MORTAR, PLAYER, POINTS, STARTING_WEAPONS, TOUCH } from '../config/balance';
 import { aimAssist, effectiveRate, killBonus, PerKeyCooldown, pushAway, rawRate } from '../core/rules';
 import { DamageQueue } from '../core/DamageQueue';
 import type { WeaponDef } from '../core/types';
-import { pointRateAt } from '../core/weaponMath';
+import { beamRate, bounceRate, erasePoints, holdRate, pointRateAt } from '../core/weaponMath';
 import { Bullet, createBulletGroup, spawnBullet, tickBullets } from '../game/Bullets';
 import { CancelPresenter } from '../game/CancelPresenter';
 import { Controls } from '../game/Controls';
@@ -67,6 +67,8 @@ export abstract class CombatScene extends Phaser.Scene {
   protected playerBullets!: Phaser.Physics.Arcade.Group;
   protected enemyBullets!: Phaser.Physics.Arcade.Group;
   private telegraphs!: Phaser.GameObjects.Graphics;
+  private beamGfx!: Phaser.GameObjects.Graphics;
+  private beamSfxTimer = 0;
   private walls: WallLike[] = [];
   protected hazards: HazardZone[] = [];
   private inFire = false;
@@ -135,6 +137,7 @@ export abstract class CombatScene extends Phaser.Scene {
     this.playerBullets = createBulletGroup(this, 'pbullet', 200);
     this.enemyBullets = createBulletGroup(this, 'ebullet', 400);
     this.telegraphs = this.add.graphics().setDepth(4);
+    this.beamGfx = this.add.graphics().setDepth(9);
 
     const spawn = this.buildWorld();
     this.player = new Player(this, spawn.x, spawn.y);
@@ -146,7 +149,7 @@ export abstract class CombatScene extends Phaser.Scene {
     for (const w of this.walls) {
       this.physics.add.collider(this.player, w);
       this.physics.add.collider(this.enemies, w);
-      this.physics.add.collider(this.playerBullets, w, (b) => (b as Bullet).kill());
+      this.physics.add.collider(this.playerBullets, w, (b) => this.onPlayerBulletWall(b as Bullet));
       this.physics.add.collider(this.enemyBullets, w, (b) => (b as Bullet).kill());
     }
     this.physics.add.collider(this.enemies, this.enemies);
@@ -278,17 +281,121 @@ export abstract class CombatScene extends Phaser.Scene {
   private onPlayerBulletHit(b: Bullet, e: Enemy): void {
     if (!b.active || !e.active || e.isSpawning) return;
     const weapon = b.weapon;
+    if (weapon?.explosion) {
+      this.explodeRocket(b);
+      return;
+    }
+    const bounces = b.bounces;
+    const extraAdds = b.boosted ? [ITEM_NUM.quickdrawBoost] : [];
     b.kill();
     Sfx.enemyHit();
-    // 与ダメージ由来のポイント（倒しきれなくても少し溜まる）。距離で倍率が変わる武器もある
+    // 与ダメージ由来のポイント（倒しきれなくても少し溜まる）。武器ごとの倍率 × レリック加算、上限つき
     const dist = Phaser.Math.Distance.Between(this.player.x, this.player.y, e.x, e.y);
-    const dealt = Math.min(b.damage, Math.max(0, e.hp));
-    const rate = this.pointRate(weapon ? pointRateAt(weapon, dist) : 1);
-    this.gainPoints((dealt / CANCEL.damagePerPoint) * rate, dist, false);
-    if (e.damage(b.damage)) this.killEnemy(e, weapon, dist);
+    const weaponRate = weapon ? pointRateAt(weapon, dist) * b.rateMult * bounceRate(weapon, bounces) : 1;
+    this.damageEnemy(e, b.damage, weaponRate, dist, weapon, extraAdds, weapon?.ricochet && bounces > 0 ? weapon.ricochet.killBonus : 0);
   }
 
-  protected killEnemy(e: Enemy, weapon: WeaponDef | null = null, dist = Infinity): void {
+  /** 敵にダメージを与え、与ダメージ由来のポイントを得る。倒れたら撃破処理 */
+  protected damageEnemy(e: Enemy, amount: number, weaponRate: number, dist: number, weapon: WeaponDef | null, extraAdds: number[] = [], extraKillBonus = 0, givePoints = true): void {
+    const dealt = Math.min(amount, Math.max(0, e.hp));
+    if (givePoints) this.gainPoints((dealt / CANCEL.damagePerPoint) * this.pointRate(weaponRate, extraAdds), dist, false);
+    if (e.damage(amount)) this.killEnemy(e, weapon, dist, extraKillBonus);
+  }
+
+  /** 自機弾が壁に当たった: 跳弾は跳ね、ロケットは爆発、それ以外は消える */
+  private onPlayerBulletWall(b: Bullet): void {
+    if (!b.active) return;
+    if (b.weapon?.explosion) {
+      this.explodeRocket(b);
+      return;
+    }
+    if (b.bounces < b.maxBounces) {
+      b.bounces++;
+      return;
+    }
+    b.kill();
+  }
+
+  /** ロケットの爆風: 敵にダメージ、敵弾を消してポイント、自分が近いと即確定 */
+  private explodeRocket(b: Bullet): void {
+    const x = b.x;
+    const y = b.y;
+    const weapon = b.weapon!;
+    const ex = weapon.explosion!;
+    const extraAdds = b.boosted ? [ITEM_NUM.quickdrawBoost] : [];
+    b.kill();
+    Sfx.enemyDie();
+    const boom = this.add.circle(x, y, ex.radius, 0xff9a3f, 0.45).setDepth(8);
+    this.tweens.add({ targets: boom, scale: 1.2, alpha: 0, duration: 280, onComplete: () => boom.destroy() });
+    this.cameras.main.shake(100, 0.004);
+
+    for (const obj of [...this.enemies.getChildren()]) {
+      const e = obj as Enemy;
+      if (!e.active || e.isSpawning) continue;
+      if (Phaser.Math.Distance.Between(x, y, e.x, e.y) > ex.radius + e.def.radius) continue;
+      const dist = Phaser.Math.Distance.Between(this.player.x, this.player.y, e.x, e.y);
+      this.damageEnemy(e, ex.damage * this.attackMult, pointRateAt(weapon, dist), dist, weapon, extraAdds);
+    }
+    // 爆風で敵弾を消す（1発ごとにポイント、1発のロケットにつき上限あり）
+    let erased = 0;
+    for (const obj of this.enemyBullets.getChildren()) {
+      const eb = obj as Bullet;
+      if (eb.active && Phaser.Math.Distance.Between(x, y, eb.x, eb.y) <= ex.radius) {
+        eb.kill();
+        erased++;
+      }
+    }
+    if (erased > 0) {
+      const pts = erasePoints(weapon, erased);
+      this.gainPoints(pts, Phaser.Math.Distance.Between(this.player.x, this.player.y, x, y), false);
+      this.presenter.floatText(x, y - 20, `弾消し +${pts.toFixed(2)}`, '#ffb35a', 14);
+    }
+    // 自分の武器の爆風は即確定
+    if (!this.dead && Phaser.Math.Distance.Between(this.player.x, this.player.y, x, y) <= ex.selfRadius) {
+      this.queue.instant('selfExplosion');
+    }
+  }
+
+  /** レーザー: 照準方向へ壁まで伸び、当たっている敵すべてにダメージ。同時に当たる数で倍率が上がる */
+  private updateBeam(dt: number, active: boolean): void {
+    const g = this.beamGfx;
+    g.clear();
+    if (!active) return;
+    const weapon = this.weapons.current.def;
+    const a = this.player.aim;
+    const sx = this.player.x + Math.cos(a) * (PLAYER.radius + 4);
+    const sy = this.player.y + Math.sin(a) * (PLAYER.radius + 4);
+    // 壁・柱で止まる
+    let len = weapon.range;
+    for (let d = 8; d <= weapon.range; d += 8) {
+      if (this.blocksSight(sx + Math.cos(a) * d, sy + Math.sin(a) * d)) {
+        len = d;
+        break;
+      }
+    }
+    const exX = sx + Math.cos(a) * len;
+    const exY = sy + Math.sin(a) * len;
+    const line = new Phaser.Geom.Line(sx, sy, exX, exY);
+    const hits = (this.enemies.getChildren() as Enemy[]).filter(
+      (e) => e.active && !e.isSpawning && Phaser.Geom.Intersects.LineToCircle(line, new Phaser.Geom.Circle(e.x, e.y, e.def.radius)),
+    );
+    const rate = beamRate(weapon, hits.length);
+    for (const e of hits) {
+      const dist = Phaser.Math.Distance.Between(this.player.x, this.player.y, e.x, e.y);
+      this.damageEnemy(e, weapon.damage * this.attackMult * dt, rate, dist, weapon);
+    }
+    const w = 3 + Math.min(hits.length, 4) * 1.5;
+    g.lineStyle(w + 6, weapon.bulletColor, 0.18).lineBetween(sx, sy, exX, exY);
+    g.lineStyle(w, weapon.bulletColor, 0.9).lineBetween(sx, sy, exX, exY);
+    g.lineStyle(1.5, 0xffffff, 1).lineBetween(sx, sy, exX, exY);
+    this.beamSfxTimer -= dt;
+    if (this.beamSfxTimer <= 0) {
+      Sfx.shoot();
+      this.beamSfxTimer = 0.12;
+    }
+  }
+
+  protected killEnemy(e: Enemy, weapon: WeaponDef | null = null, dist = Infinity, extraBonus = 0): void {
     const src = this.sources.get(e.uid);
     if (src) {
       src.x = e.x;
@@ -304,7 +411,8 @@ export abstract class CombatScene extends Phaser.Scene {
     // 撃破ボーナス（倍率はかけない）: 至近 / 狙撃 / 仇の狙撃
     const isNemesis = this.queue.pending.some((p) => p.sourceId === e.uid);
     const kb = killBonus({ dist, weapon, isNemesis }, POINTS.snipe);
-    const bonus = kb.bonus;
+    const bonus = kb.bonus + extraBonus;
+    if (extraBonus > 0) this.presenter.floatText(e.x, e.y - 34, `跳弾 +${extraBonus}`, '#a0ffa0', 15);
     if (kb.kind) {
       const label = kb.kind === 'close' ? '至近' : kb.kind === 'nemesis' ? '仇討ち' : '狙撃';
       this.presenter.floatText(e.x, e.y - 18, `${label} +${bonus}`, kb.kind === 'close' ? '#ffb35a' : '#9fe8ff', 15);
@@ -351,8 +459,8 @@ export abstract class CombatScene extends Phaser.Scene {
   }
 
   /** 与ダメージ由来のポイント倍率: 武器の倍率 × (1 + レリック加算) を上限つきで */
-  protected pointRate(weaponRate: number): number {
-    return effectiveRate(rawRate(weaponRate, this.relicAdds()), POINTS.softcap);
+  protected pointRate(weaponRate: number, extraAdds: number[] = []): number {
+    return effectiveRate(rawRate(weaponRate, [...this.relicAdds(), ...extraAdds]), POINTS.softcap);
   }
 
   /** 相殺ポイントを得る（計測の距離帯も記録） */
@@ -480,8 +588,9 @@ export abstract class CombatScene extends Phaser.Scene {
     // 射撃（ダッシュ中も可能）
     const fire = this.weapons.tick(dt, this.controls.fireHeld, this.player.aim);
     if (fire.autoReload) Sfx.reload();
+    this.updateBeam(dt, fire.beam);
     for (const shot of fire.shots) {
-      const b = spawnBullet(this.playerBullets, 'pbullet');
+      const b = spawnBullet(this.playerBullets, shot.def.kind === 'rocket' ? 'rocket' : 'pbullet');
       if (!b) continue;
       const ox = this.player.x + Math.cos(shot.angle) * (PLAYER.radius + 6);
       const oy = this.player.y + Math.sin(shot.angle) * (PLAYER.radius + 6);
@@ -489,6 +598,9 @@ export abstract class CombatScene extends Phaser.Scene {
         damage: shot.def.damage * this.attackMult,
         life: shot.def.range / shot.def.bulletSpeed,
         weapon: shot.def,
+        rateMult: shot.rateMult,
+        boosted: shot.boosted,
+        maxBounces: shot.def.ricochet?.bounces ?? 0,
         tint: this.attackBuffTime > 0 ? 0xff9a3f : shot.def.bulletColor,
         scale: (shot.def.bulletRadius / 4) * (this.attackBuffTime > 0 ? 1.3 : 1),
         hitRadius: shot.def.bulletRadius,
@@ -513,7 +625,7 @@ export abstract class CombatScene extends Phaser.Scene {
     };
     const killable: Array<{ x: number; y: number; r: number }> = [];
     const w = this.weapons.current.def;
-    const killDamage = w.damage * w.pellets * this.attackMult * FX.killableShots;
+    const killDamage = (w.explosion ? w.explosion.damage : w.kind === 'beam' ? w.damage * 0.5 : w.damage * w.pellets) * this.attackMult * FX.killableShots;
     for (const obj of this.enemies.getChildren()) {
       const e = obj as Enemy;
       if (!e.active) continue;
@@ -668,7 +780,13 @@ export abstract class CombatScene extends Phaser.Scene {
 
     const w = this.weapons.current;
     const reserve = w.reserve === null ? '∞' : String(w.reserve);
-    this.ammoText.setText(`${w.def.name}   ${w.mag} / ${w.def.magazine}   (${reserve})`);
+    if (w.def.kind === 'beam') {
+      const heat = this.weapons.overheated > 0 ? '過熱' : `熱 ${Math.round((this.weapons.heat / w.def.heat!.max) * 100)}%`;
+      this.ammoText.setText(`${w.def.name}   ${heat}`);
+    } else {
+      const ramp = w.def.holdRamp && this.weapons.holdTime > 0 ? `  ×${holdRate(w.def, this.weapons.holdTime).toFixed(1)}` : '';
+      this.ammoText.setText(`${w.def.name}   ${w.mag} / ${w.def.magazine}   (${reserve})${ramp}${this.weapons.boosted ? '  早撃ち+' : ''}`);
+    }
     const lines = this.infoLines();
     if (this.attackBuffTime > 0) lines.push(`攻撃力 +${Math.round(this.attackBuff * 100)}%  ${this.attackBuffTime.toFixed(1)}s`);
     this.infoText.setText(lines.join('\n'));

@@ -1,8 +1,9 @@
 // テスト部屋: 1部屋でウェーブが続く。相殺や武器の手触りの調整用。
 
 import Phaser from 'phaser';
-import { TEST_ROOM } from '../config/balance';
-import { CombatScene } from './CombatScene';
+import { TEST_ROOM, TEST_ROOM_WEAPONS } from '../config/balance';
+import { WeaponSystem } from '../game/WeaponSystem';
+import { CombatScene, newRunState, type RunState } from './CombatScene';
 
 export class TestRoomScene extends CombatScene {
   private waveIndex = 0;
@@ -12,6 +13,13 @@ export class TestRoomScene extends CombatScene {
 
   constructor() {
     super('TestRoom');
+  }
+
+  init(data: { run?: RunState }): void {
+    // テスト部屋ではすべての武器を持つ
+    const run = data.run ?? newRunState();
+    if (!data.run) run.weapons = new WeaponSystem(TEST_ROOM_WEAPONS);
+    super.init({ run });
   }
 
   protected buildWorld(): { x: number; y: number } {

@@ -1,6 +1,6 @@
 // 武器・敵などのデータ定義の型。数値そのものは src/config/balance.ts に置く。
 
-export type WeaponId = 'handgun' | 'shotgun';
+export type WeaponId = 'handgun' | 'shotgun' | 'machinegun' | 'laser' | 'ricochet' | 'rocket';
 
 export interface WeaponDef {
   id: WeaponId;
@@ -35,6 +35,18 @@ export interface WeaponDef {
   pointFalloff?: Array<[number, number]>;
   /** この距離以内で倒すと撃破ポイントにボーナスを足す（任意） */
   closeKillBonus?: { range: number; points: number };
+  /** 弾の種類: 通常弾 / 照射（レーザー）/ ロケット（爆風）。省略時は通常弾 */
+  kind?: 'bullet' | 'beam' | 'rocket';
+  /** 押しっぱなしで倍率が from から time 秒かけて to まで上がる（マシンガン）。指を離すかリロードでリセット */
+  holdRamp?: { from: number; to: number; time: number };
+  /** 照射: damage は毎秒のダメージ。maxHeat 秒撃ち続けると過熱し、cooldown 秒撃てない */
+  heat?: { max: number; cooldown: number };
+  /** 照射の倍率: base + perExtra × (同時に当たっている敵の数 − 1)、上限 max */
+  beamRate?: { base: number; perExtra: number; max: number };
+  /** 跳弾: 壁で跳ねる回数と、跳ねた回数ごとの倍率 [直撃, 1回, 2回]、跳弾で倒したときの撃破ボーナス */
+  ricochet?: { bounces: number; rates: number[]; killBonus: number };
+  /** ロケットの爆風。自分が selfRadius 以内にいると即確定。爆風で消した敵弾1発につき erasePoints（1発あたり eraseMax まで） */
+  explosion?: { damage: number; radius: number; selfRadius: number; erasePoints: number; eraseMax: number };
   /** 弾の見た目 */
   bulletRadius: number;
   bulletColor: number;

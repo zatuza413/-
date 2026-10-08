@@ -199,6 +199,51 @@ export const TEST_ROOM = {
   ],
 };
 
+/** アイテムの数値（すべて仮）。重ねがけで相殺が壊れないよう、各効果に上限を設ける */
+export const ITEM_NUM = {
+  /** 砂時計: 予告のタイマー +1秒（タイマーは上限6秒） */
+  hourglassTimer: 1.0,
+  /** 二重相殺: ポイントが2倍になる確率 */
+  doubleChance: 0.15,
+  /** 貯蓄の指輪: ストック上限 +1 */
+  ringStock: 1,
+  /** 怒りの予告: 予告が minPending 個以上ある間、攻撃力 +attack */
+  wrath: { minPending: 2, attack: 0.25 },
+  /** 連鎖の鐘: 連鎖の受付時間 ×1.5（上限は CANCEL.chainWindowMax） */
+  bellWindowMult: 1.5,
+  /** 呪詛返し: 相殺すると、その予告を作った敵に damage。同じ敵には cooldown 秒に1回。ポイントは入らない */
+  curse: { damage: 20, cooldown: 1.0 },
+  /** 危険報酬の財布: 予告がある間に敵を倒すと通貨 +1 */
+  walletCurrency: 1,
+  /** 弾倉の誓い: 予告が積まれるたびに弾を rounds 発補充（cooldown 秒に1回、ハンドガンには効果なし） */
+  magazineVow: { rounds: 2, cooldown: 0.5 },
+  /** 予告中のポイント倍率レリック（仮名「背水の札」）: 予告がある間、倍率 +add */
+  backwater: 0.3,
+  /** 集中の照準器: minDist 以上での命中が続くたびに +perHit（上限 max）、外すと −missPenalty。farDist 以上は2回分 */
+  focus: { minDist: 200, farDist: 400, perHit: 0.1, max: 1.0, missPenalty: 0.3 },
+  /** 弾撃ちの銃身: 大きめの敵弾を撃ち落とすと +perBullet（1部屋で roomMax まで） */
+  shootdown: { perBullet: 0.1, roomMax: 1.0 },
+  /** 反撃の型: 予告が積まれてから duration 秒間、倍率 +bonus。発動後 lockout 秒は再発動しない */
+  counter: { bonus: 0.5, duration: 1.0, lockout: 2.0 },
+  /** 据え撃ちの台座: stillTime 秒以上動かずに撃ち続けると倍率 +bonus。移動・ダッシュで解除 */
+  stance: { bonus: 0.5, stillTime: 1.0 },
+  /** かすめの護符: 敵弾が radius 以内を通過すると +perGraze（毎秒 perSecond、1部屋 roomMax まで） */
+  graze: { radius: 24, perGraze: 0.05, perSecond: 0.3, roomMax: 1.5 },
+  /** 早撃ちの弾帯: リロードの start（割合）から width 秒の間に再入力で即完了、次の1弾倉は倍率 +boost */
+  quickdraw: { start: 0.45, width: 0.15 },
+  quickdrawBoost: 0.3,
+  /** 「撃っている間」とみなす、最後に撃ってからの秒数（撃っていない間はポイントが溜まらない） */
+  shootingGrace: 0.5,
+};
+
+/** 宝箱 */
+export const CHEST = {
+  /** 候補の数 */
+  choices: 3,
+  /** 最初の宝箱で必ず候補に入れるアイテム */
+  firstGuaranteed: 'backwater',
+};
+
 /** 武器 */
 export const WEAPONS: Record<WeaponId, WeaponDef> = {
   handgun: {
@@ -240,10 +285,87 @@ export const WEAPONS: Record<WeaponId, WeaponDef> = {
     bulletRadius: 3,
     bulletColor: 0xffb35a,
   },
+  // 押しっぱなしで倍率が上がる（×0.5 → 2秒で ×1.5）。指を離すかリロードでリセット
+  machinegun: {
+    id: 'machinegun',
+    name: 'マシンガン',
+    damage: 6,
+    fireRate: 12,
+    pellets: 1,
+    spreadDeg: 7,
+    bulletSpeed: 620,
+    range: 560,
+    magazine: 40,
+    maxAmmo: 400,
+    reloadTime: 1.5,
+    pointRate: 1.0,
+    holdRamp: { from: 0.5, to: 1.5, time: 2.0 },
+    bulletRadius: 3,
+    bulletColor: 0xfff7b0,
+  },
+  // 照射・すべて貫通。貫通した数で稼ぐ（同時に当たる敵が多いほど倍率が上がる）
+  laser: {
+    id: 'laser',
+    name: 'レーザー',
+    kind: 'beam',
+    damage: 40, // 毎秒
+    fireRate: 1,
+    pellets: 1,
+    spreadDeg: 0,
+    bulletSpeed: 0,
+    range: 700,
+    magazine: 1,
+    maxAmmo: null,
+    reloadTime: 0,
+    pointRate: 1.0,
+    heat: { max: 3.0, cooldown: 1.5 },
+    beamRate: { base: 0.6, perExtra: 0.4, max: 2.2 },
+    bulletRadius: 3,
+    bulletColor: 0x9ff0ff,
+  },
+  // 壁で2回まで跳ねる。跳ねてから当てるほど倍率が高い。跳弾で倒すと撃破+0.5
+  ricochet: {
+    id: 'ricochet',
+    name: '跳弾銃',
+    damage: 12,
+    fireRate: 3,
+    pellets: 1,
+    spreadDeg: 2,
+    bulletSpeed: 480,
+    range: 1100,
+    magazine: 8,
+    maxAmmo: 160, // 仮（指示に無いため）
+    reloadTime: 1.2,
+    pointRate: 1.0,
+    ricochet: { bounces: 2, rates: [0.4, 1.4, 2.0], killBonus: 0.5 },
+    bulletRadius: 4,
+    bulletColor: 0xa0ffa0,
+  },
+  // 爆風で稼ぐ。ポイント倍率は低いが、爆風で敵弾を消すとポイント。自分が爆心近くにいると即確定
+  rocket: {
+    id: 'rocket',
+    name: 'ロケット',
+    kind: 'rocket',
+    damage: 0, // ダメージは爆風のみ
+    fireRate: 1,
+    pellets: 1,
+    spreadDeg: 0,
+    bulletSpeed: 380,
+    range: 800,
+    magazine: 4,
+    maxAmmo: 24,
+    reloadTime: 1.6,
+    pointRate: 0.5,
+    explosion: { damage: 50, radius: 70, selfRadius: 60, erasePoints: 0.15, eraseMax: 1.0 },
+    bulletRadius: 6,
+    bulletColor: 0xff8a3f,
+  },
 };
 
 /** 初期装備 */
-export const STARTING_WEAPONS: WeaponId[] = ['handgun', 'shotgun'];
+export const STARTING_WEAPONS: WeaponId[] = ['handgun'];
+/** テスト部屋ではすべての武器を持つ */
+export const TEST_ROOM_WEAPONS: WeaponId[] = ['handgun', 'shotgun', 'machinegun', 'laser', 'ricochet', 'rocket'];
 
 /** 敵弾の共通設定 */
 export const ENEMY_BULLET = {
