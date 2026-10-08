@@ -16,8 +16,10 @@ export class Enemy extends Phaser.Physics.Arcade.Image {
   aiTime = 0;
   timer = 0;
   dir = 0;
-  /** 予備動作の表示（描画は GameScene がまとめて行う） */
-  telegraph: { type: 'flash' | 'line'; angle: number; progress: number; length: number } | null = null;
+  /** 狙いの角度（狙撃の照準など） */
+  aimAngle = 0;
+  /** 予備動作の表示（描画は CombatScene がまとめて行う）。sniper は細い照準線 */
+  telegraph: { type: 'flash' | 'line'; angle: number; progress: number; length: number; sniper?: boolean } | null = null;
   /** 突進中など、接触ダメージが有効か */
   contactActive = true;
   /** 衝撃波などでのけぞっている残り時間（秒）。この間は行動しない */

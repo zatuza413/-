@@ -1,5 +1,6 @@
 // 敵の行動パターン。EnemyDef.behavior の値でここから選ばれる。
 // 新しい敵を足すときは、関数を1つ追加して BEHAVIORS に登録し、balance.ts の ENEMIES に定義を書く。
+// 攻撃の前には必ず予備動作（光る・線・着弾予告）を見せる。
 
 import Phaser from 'phaser';
 import type { EnemyBehaviorId } from '../core/types';
@@ -9,7 +10,11 @@ export interface EnemyContext {
   playerX: number;
   playerY: number;
   /** 敵弾を撃つ */
-  fire(enemy: Enemy, angle: number, speed: number): void;
+  fire(enemy: Enemy, angle: number, speed: number, opts?: { big?: boolean }): void;
+  /** 迫撃砲: (x, y) に着弾予告を出し、時間がたつと爆発する */
+  lobShell(enemy: Enemy, x: number, y: number): void;
+  /** 2点の間に壁・柱が無いか */
+  hasLineOfSight(x1: number, y1: number, x2: number, y2: number): boolean;
 }
 
 type Behavior = (e: Enemy, ctx: EnemyContext, dt: number) => void;
@@ -18,20 +23,17 @@ function body(e: Enemy): Phaser.Physics.Arcade.Body {
   return e.body as Phaser.Physics.Arcade.Body;
 }
 
-/** 直進弾を撃つ雑魚: 距離を保ちつつ横移動し、予備動作のあと自機へ1発 */
-const shooter: Behavior = (e, ctx, dt) => {
-  const p = e.def.params;
+/** 好みの距離へ寄りつつ、ゆっくり周回する移動。2.5秒ごとに周回の向きを変える */
+function orbit(e: Enemy, ctx: EnemyContext, preferredRange: number, speed = e.def.speed): void {
   const dx = ctx.playerX - e.x;
   const dy = ctx.playerY - e.y;
   const dist = Math.hypot(dx, dy);
   const toPlayer = Math.atan2(dy, dx);
-
-  // 移動: 好みの距離へ寄りつつ、ゆっくり周回する
   if (e.ai === 'idle') {
     e.setAi('move');
     e.dir = Math.random() < 0.5 ? 1 : -1;
   }
-  const radial = dist > p.preferredRange + 30 ? 1 : dist < p.preferredRange - 30 ? -1 : 0;
+  const radial = dist > preferredRange + 30 ? 1 : dist < preferredRange - 30 ? -1 : 0;
   const strafe = toPlayer + (Math.PI / 2) * e.dir;
   const vx = Math.cos(toPlayer) * radial + Math.cos(strafe) * 0.6;
   const vy = Math.sin(toPlayer) * radial + Math.sin(strafe) * 0.6;
@@ -40,7 +42,16 @@ const shooter: Behavior = (e, ctx, dt) => {
     e.dir *= -1;
     e.aiTime = 0;
   }
+  body(e).setVelocity((vx / len) * speed, (vy / len) * speed);
+}
 
+/**
+ * 弾を撃つ雑魚（直進撃ち・扇撃ち）: 距離を保って周回し、光ってから撃つ。
+ * params.count > 1 なら spreadDeg の扇状に撃つ。
+ */
+const shooter: Behavior = (e, ctx, dt) => {
+  const p = e.def.params;
+  const toPlayer = Math.atan2(ctx.playerY - e.y, ctx.playerX - e.x);
   e.timer += dt;
   const untilFire = p.fireInterval - e.timer;
   if (untilFire <= p.telegraph) {
@@ -48,11 +59,16 @@ const shooter: Behavior = (e, ctx, dt) => {
     body(e).setVelocity(0, 0);
     e.telegraph = { type: 'flash', angle: toPlayer, progress: 1 - untilFire / p.telegraph, length: 0 };
   } else {
-    body(e).setVelocity((vx / len) * e.def.speed, (vy / len) * e.def.speed);
+    orbit(e, ctx, p.preferredRange);
   }
   if (e.timer >= p.fireInterval) {
     e.timer = 0;
-    ctx.fire(e, toPlayer, p.bulletSpeed);
+    const n = p.count ?? 1;
+    const spread = ((p.spreadDeg ?? 0) * Math.PI) / 180;
+    for (let i = 0; i < n; i++) {
+      const a = n === 1 ? toPlayer : toPlayer - spread / 2 + (spread * i) / (n - 1);
+      ctx.fire(e, a, p.bulletSpeed);
+    }
   }
 };
 
@@ -94,7 +110,78 @@ const charger: Behavior = (e, ctx) => {
   }
 };
 
+/** 自爆型: まっすぐ近づいてくる。倒すと弾をばらまく（ばらまきは CombatScene が行う） */
+const bomber: Behavior = (e, ctx) => {
+  const toPlayer = Math.atan2(ctx.playerY - e.y, ctx.playerX - e.x);
+  // 少し蛇行させて、撃ち抜きにくくする
+  const wobble = Math.sin(e.age * 5) * 0.35;
+  body(e).setVelocity(Math.cos(toPlayer + wobble) * e.def.speed, Math.sin(toPlayer + wobble) * e.def.speed);
+};
+
+/** 迫撃砲型: 遠めを保ち、一定間隔で自機の位置へ曲射。自機が近すぎると撃たない */
+const mortar: Behavior = (e, ctx, dt) => {
+  const p = e.def.params;
+  orbit(e, ctx, p.preferredRange);
+  e.timer += dt;
+  if (e.timer < p.fireInterval) return;
+  const dist = Phaser.Math.Distance.Between(e.x, e.y, ctx.playerX, ctx.playerY);
+  if (dist < p.minRange) return; // 撃てる距離になるまで待つ
+  e.timer = 0;
+  e.telegraph = { type: 'flash', angle: 0, progress: 0, length: 0 };
+  ctx.lobShell(e, ctx.playerX, ctx.playerY);
+};
+
+/**
+ * 狙撃エリート: 射線が通っていれば照準線を出し、最後に向きを固定して高速弾を撃つ。
+ * 撃ったあとは自機から離れる向きに後退し、柱の陰に入って射線を切る。
+ */
+const sniper: Behavior = (e, ctx, dt) => {
+  const p = e.def.params;
+  const toPlayer = Math.atan2(ctx.playerY - e.y, ctx.playerX - e.x);
+  const dist = Phaser.Math.Distance.Between(e.x, e.y, ctx.playerX, ctx.playerY);
+  const los = ctx.hasLineOfSight(e.x, e.y, ctx.playerX, ctx.playerY);
+  const b = body(e);
+  e.timer += dt;
+
+  switch (e.ai) {
+    case 'idle':
+    case 'move':
+      orbit(e, ctx, p.preferredRange, e.def.speed * 0.7);
+      if (los && e.timer >= p.cooldown) {
+        e.setAi('aim');
+        e.aimAngle = toPlayer;
+      }
+      break;
+    case 'aim': {
+      b.setVelocity(0, 0);
+      // 射線が切れたら撃たない
+      if (!los && e.aiTime < p.aimTime - p.lockTime) {
+        e.setAi('move');
+        break;
+      }
+      if (e.aiTime < p.aimTime - p.lockTime) e.aimAngle = toPlayer;
+      e.telegraph = { type: 'line', angle: e.aimAngle, progress: e.aiTime / p.aimTime, length: Math.max(dist + 80, 400), sniper: true };
+      if (e.aiTime >= p.aimTime) {
+        ctx.fire(e, e.aimAngle, p.bulletSpeed, { big: true });
+        e.timer = 0;
+        e.setAi('retreat');
+      }
+      break;
+    }
+    case 'retreat': {
+      // 自機から離れつつ、射線が切れる向き（横）にずれる
+      const away = toPlayer + Math.PI + (los ? 0.6 * (e.dir > 0 ? 1 : -1) : 0);
+      b.setVelocity(Math.cos(away) * e.def.speed, Math.sin(away) * e.def.speed);
+      if (e.aiTime >= p.retreatTime) e.setAi('move');
+      break;
+    }
+  }
+};
+
 export const BEHAVIORS: Record<EnemyBehaviorId, Behavior> = {
   shooter,
   charger,
+  bomber,
+  mortar,
+  sniper,
 };

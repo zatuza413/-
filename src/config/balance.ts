@@ -173,9 +173,9 @@ export const FLOOR = {
   enemies: { base: 3, perFloor: 1, random: 2, bossRoomMultiplier: 1.8 },
   /** フロアごとに出る敵（敵ID の配列。重複させると出やすくなる） */
   enemyPool: [
-    ['shooter', 'shooter', 'charger'],
-    ['shooter', 'charger', 'charger'],
-    ['shooter', 'shooter', 'charger', 'charger'],
+    ['shooter', 'shooter', 'charger', 'fan', 'bomber'],
+    ['shooter', 'charger', 'fan', 'bomber', 'mortar', 'mortar', 'sniper'],
+    ['shooter', 'charger', 'fan', 'bomber', 'bomber', 'mortar', 'mortar', 'sniper', 'sniper'],
   ] as string[][],
   /** 敵を自機からこれ以上離れた位置に出す (px) */
   spawnMinDistance: 220,
@@ -192,9 +192,10 @@ export const TEST_ROOM = {
   /** ウェーブの構成（敵ID の配列）。最後まで行ったらループ */
   waves: [
     ['shooter', 'shooter', 'charger'],
-    ['shooter', 'shooter', 'shooter', 'charger', 'charger'],
-    ['charger', 'charger', 'charger', 'shooter', 'shooter', 'shooter'],
-    ['shooter', 'shooter', 'shooter', 'shooter', 'charger', 'charger', 'charger'],
+    ['fan', 'shooter', 'bomber', 'charger'],
+    ['mortar', 'shooter', 'shooter', 'bomber', 'bomber'],
+    ['sniper', 'fan', 'charger', 'charger'],
+    ['sniper', 'mortar', 'mortar', 'fan', 'bomber', 'bomber', 'shooter'],
   ],
 };
 
@@ -251,6 +252,16 @@ export const ENEMY_BULLET = {
   hitRadius: 4,
   color: 0xff5ab4,
   lifetime: 5,
+  /** 大きめの弾（狙撃など）。「弾撃ちの銃身」で撃ち落とせる */
+  big: { radius: 9, hitRadius: 6, color: 0xff8a3f },
+};
+
+/** 迫撃砲の着弾 */
+export const MORTAR = {
+  /** 着弾予告の時間（秒） */
+  warn: 1.0,
+  /** 爆風の半径 (px) */
+  radius: 60,
 };
 
 /** 敵 */
@@ -297,6 +308,87 @@ export const ENEMIES: Record<string, EnemyDef> = {
       chargeTime: 0.45,
       /** 突進後の硬直（秒） */
       recover: 0.9,
+    },
+  },
+  // 役割なし（数合わせ・ボスの召喚用）
+  fan: {
+    id: 'fan',
+    name: '扇撃ち',
+    behavior: 'shooter',
+    hp: 30,
+    speed: 65,
+    radius: 13,
+    color: 0xc9508f,
+    elite: false,
+    params: {
+      fireInterval: 1.5,
+      telegraph: 0.35,
+      bulletSpeed: 170,
+      preferredRange: 240,
+      initialDelayJitter: 1.0,
+      /** 1回に撃つ弾の数と扇の全幅（度） */
+      count: 5,
+      spreadDeg: 60,
+    },
+  },
+  // 近距離を罰する: 倒すと全方位に弾をばらまく
+  bomber: {
+    id: 'bomber',
+    name: '自爆型',
+    behavior: 'bomber',
+    hp: 25,
+    speed: 150,
+    radius: 12,
+    color: 0x9ad04a,
+    elite: false,
+    params: {
+      /** 倒したときの1回目の全方位弾 */
+      burst1: 12,
+      /** 0.35秒後の2回目（1回目の隙間を埋める向き） */
+      burst2: 8,
+      burstDelay: 0.35,
+      bulletSpeed: 170,
+    },
+  },
+  // 遠距離を罰する: 自機の位置に予告してから着弾
+  mortar: {
+    id: 'mortar',
+    name: '迫撃砲',
+    behavior: 'mortar',
+    hp: 40,
+    speed: 45,
+    radius: 14,
+    color: 0x6fa0d8,
+    elite: false,
+    params: {
+      fireInterval: 2.5,
+      /** 自機がこの距離より近いと撃たない */
+      minRange: 120,
+      preferredRange: 340,
+      initialDelayJitter: 1.5,
+    },
+  },
+  // 攻めの遠距離を試す: 照準線のあと高速弾。柱の陰に隠れながら後退する
+  sniper: {
+    id: 'sniper',
+    name: '狙撃エリート',
+    behavior: 'sniper',
+    hp: 120,
+    speed: 95,
+    radius: 15,
+    color: 0xd8d8f0,
+    elite: true,
+    params: {
+      /** 照準線の時間（秒）。最後の lockTime 秒は向きが固定（避ける猶予） */
+      aimTime: 0.8,
+      lockTime: 0.25,
+      bulletSpeed: 520,
+      /** 撃ったあと後退する時間（秒） */
+      retreatTime: 1.4,
+      /** 射撃の間隔の下限（秒） */
+      cooldown: 2.2,
+      preferredRange: 380,
+      initialDelayJitter: 1.0,
     },
   },
 };

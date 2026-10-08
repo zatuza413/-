@@ -2,7 +2,7 @@
 // 部屋の作り方と進行は派生クラス（TestRoomScene / FloorScene）が決める。
 
 import Phaser from 'phaser';
-import { CANCEL, CHAIN, CONTACT, ENEMIES, ENEMY_BULLET, FX, PLAYER, POINTS, STARTING_WEAPONS, TOUCH } from '../config/balance';
+import { CANCEL, CHAIN, CONTACT, ENEMIES, ENEMY_BULLET, FX, MORTAR, PLAYER, POINTS, STARTING_WEAPONS, TOUCH } from '../config/balance';
 import { aimAssist, effectiveRate, killBonus, PerKeyCooldown, pushAway, rawRate } from '../core/rules';
 import { DamageQueue } from '../core/DamageQueue';
 import type { WeaponDef } from '../core/types';
@@ -83,6 +83,8 @@ export abstract class CombatScene extends Phaser.Scene {
   private unsubscribeQueue: (() => void) | null = null;
   /** 同じ敵からの接触は1秒に1回まで */
   private contactCooldown = new PerKeyCooldown(CONTACT.cooldown);
+  /** 迫撃砲の着弾予告 */
+  private shells: Array<{ x: number; y: number; t: number; ownerId: number }> = [];
 
   // HUD
   private hud!: Phaser.GameObjects.Graphics;
@@ -123,6 +125,7 @@ export abstract class CombatScene extends Phaser.Scene {
     this.attackBuffTime = 0;
     this.hitstopUntil = 0;
     this.contactCooldown.clear();
+    this.shells = [];
 
     this.queue = this.run.queue;
     this.weapons = this.run.weapons;
@@ -307,6 +310,18 @@ export abstract class CombatScene extends Phaser.Scene {
       this.presenter.floatText(e.x, e.y - 18, `${label} +${bonus}`, kb.kind === 'close' ? '#ffb35a' : '#9fe8ff', 15);
     }
     if (this.recordTelemetry && (kb.kind === 'snipe' || kb.kind === 'nemesis')) telemetry.snipeKill();
+    // 自爆型: 倒すと全方位に弾をばらまき、少し遅れて隙間を埋めるようにもう一度
+    const p = e.def.params;
+    if (p.burst1) {
+      const { x, y } = e;
+      const ring = (n: number, offset: number) => {
+        for (let i = 0; i < n; i++) this.fireEnemyBullet(e.uid, x, y, offset + (i / n) * Math.PI * 2, p.bulletSpeed);
+      };
+      ring(p.burst1, Math.random() * Math.PI * 2);
+      this.time.delayedCall(p.burstDelay * 1000, () => {
+        if (this.sys.isActive() && !this.dead) ring(p.burst2, Math.random() * Math.PI * 2);
+      });
+    }
     e.destroy();
     this.gainPoints((e.def.elite ? CANCEL.killPoints.elite : CANCEL.killPoints.normal) + bonus, dist, true);
     this.onEnemyKilled(e);
@@ -486,12 +501,15 @@ export abstract class CombatScene extends Phaser.Scene {
     const ctx: EnemyContext = {
       playerX: this.player.x,
       playerY: this.player.y,
-      fire: (e, angle, speed) => {
-        const b = spawnBullet(this.enemyBullets, 'ebullet');
-        if (!b) return;
-        b.fire(e.x, e.y, angle, speed, { damage: 1, life: ENEMY_BULLET.lifetime, ownerId: e.uid, hitRadius: ENEMY_BULLET.hitRadius });
+      fire: (e, angle, speed, opts) => {
+        this.fireEnemyBullet(e.uid, e.x, e.y, angle, speed, opts?.big ?? false);
         Sfx.enemyShoot();
       },
+      lobShell: (e, x, y) => {
+        this.shells.push({ x, y, t: MORTAR.warn, ownerId: e.uid });
+        Sfx.enemyShoot();
+      },
+      hasLineOfSight: (x1, y1, x2, y2) => this.hasLineOfSight(x1, y1, x2, y2),
     };
     const killable: Array<{ x: number; y: number; r: number }> = [];
     const w = this.weapons.current.def;
@@ -508,6 +526,7 @@ export abstract class CombatScene extends Phaser.Scene {
       if (!e.isSpawning && e.hp <= killDamage) killable.push({ x: e.x, y: e.y, r: e.def.radius });
     }
     this.drawTelegraphs();
+    this.updateShells(dt);
 
     tickBullets(this.playerBullets, dt);
     tickBullets(this.enemyBullets, dt);
@@ -544,6 +563,40 @@ export abstract class CombatScene extends Phaser.Scene {
     }
   }
 
+  protected fireEnemyBullet(ownerId: number, x: number, y: number, angle: number, speed: number, big = false): void {
+    const b = spawnBullet(this.enemyBullets, big ? 'ebullet_big' : 'ebullet');
+    if (!b) return;
+    b.fire(x, y, angle, speed, {
+      damage: 1,
+      life: ENEMY_BULLET.lifetime,
+      ownerId,
+      big,
+      hitRadius: big ? ENEMY_BULLET.big.hitRadius : ENEMY_BULLET.hitRadius,
+    });
+  }
+
+  /** 迫撃砲: 予告の輪が縮み、0になったら爆発。爆風は予告になる（即確定にはしない） */
+  private updateShells(dt: number): void {
+    const g = this.telegraphs;
+    for (const sh of this.shells) {
+      sh.t -= dt;
+      const k = Phaser.Math.Clamp(sh.t / MORTAR.warn, 0, 1);
+      g.fillStyle(0xff5050, 0.12 + 0.18 * (1 - k)).fillCircle(sh.x, sh.y, MORTAR.radius);
+      g.lineStyle(2, 0xff5050, 0.9).strokeCircle(sh.x, sh.y, MORTAR.radius);
+      g.lineStyle(2, 0xffb0b0, 0.9).strokeCircle(sh.x, sh.y, Math.max(2, MORTAR.radius * k));
+      if (sh.t > 0) continue;
+      // 着弾
+      const boom = this.add.circle(sh.x, sh.y, MORTAR.radius, 0xffb060, 0.6).setDepth(7);
+      this.tweens.add({ targets: boom, scale: 1.25, alpha: 0, duration: 260, onComplete: () => boom.destroy() });
+      Sfx.enemyDie();
+      if (!this.dead && Phaser.Math.Distance.Between(sh.x, sh.y, this.player.x, this.player.y) <= MORTAR.radius + PLAYER.hitRadius) {
+        const r = this.queue.hit('explosion', sh.ownerId);
+        if (r !== 'ignored') this.recordHit(sh.ownerId);
+      }
+    }
+    this.shells = this.shells.filter((sh) => sh.t > 0);
+  }
+
   private drawTelegraphs(): void {
     const g = this.telegraphs;
     g.clear();
@@ -551,7 +604,11 @@ export abstract class CombatScene extends Phaser.Scene {
       const e = obj as Enemy;
       const t = e.telegraph;
       if (!e.active || !t) continue;
-      if (t.type === 'line') {
+      if (t.type === 'line' && t.sniper) {
+        // 狙撃の照準線: 細く、固定されると濃くなる
+        g.lineStyle(1 + t.progress * 2, 0xff3030, 0.3 + 0.6 * t.progress);
+        g.lineBetween(e.x, e.y, e.x + Math.cos(t.angle) * t.length, e.y + Math.sin(t.angle) * t.length);
+      } else if (t.type === 'line') {
         g.lineStyle(2 + t.progress * 6, 0xff5050, 0.15 + 0.35 * t.progress);
         g.lineBetween(e.x, e.y, e.x + Math.cos(t.angle) * t.length, e.y + Math.sin(t.angle) * t.length);
       } else {

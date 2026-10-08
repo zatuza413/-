@@ -47,6 +47,15 @@ export class BootScene extends Phaser.Scene {
     g.lineStyle(1.5, 0x3a0020, 1).strokeCircle(es / 2, es / 2, er);
     g.generateTexture('ebullet', es, es);
 
+    // 大きめの敵弾（狙撃）: 撃ち落とせる
+    const B = ENEMY_BULLET.big;
+    const bs = B.radius * 2 + 4;
+    g.clear();
+    g.fillStyle(B.color, 1).fillCircle(bs / 2, bs / 2, B.radius);
+    g.fillStyle(0xffffff, 1).fillCircle(bs / 2, bs / 2, B.radius * 0.45);
+    g.lineStyle(2, 0x3a1000, 1).strokeCircle(bs / 2, bs / 2, B.radius);
+    g.generateTexture('ebullet_big', bs, bs);
+
     // 壁
     g.clear();
     g.fillStyle(0x3a3a52, 1).fillRect(0, 0, 32, 32);

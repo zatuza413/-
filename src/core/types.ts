@@ -40,7 +40,7 @@ export interface WeaponDef {
   bulletColor: number;
 }
 
-export type EnemyBehaviorId = 'shooter' | 'charger';
+export type EnemyBehaviorId = 'shooter' | 'charger' | 'bomber' | 'mortar' | 'sniper';
 
 export interface EnemyDef {
   id: string;
