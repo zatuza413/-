@@ -2,6 +2,7 @@
 
 import Phaser from 'phaser';
 import { TEST_ROOM, TEST_ROOM_WEAPONS } from '../config/balance';
+import type { Enemy } from '../game/Enemy';
 import { WeaponSystem } from '../game/WeaponSystem';
 import { CombatScene, newRunState, type RunState } from './CombatScene';
 
@@ -77,7 +78,8 @@ export class TestRoomScene extends CombatScene {
     }
   }
 
-  protected onEnemyKilled(): void {
+  protected onEnemyKilled(e: Enemy): void {
+    if (e.def.behavior === 'boss') this.clearBossLeftovers();
     // 部屋（ウェーブ）の全滅: 残った予告はすべて消える。テスト部屋では弾も補充
     if (this.waveActive && this.enemiesAlive === 0) {
       this.waveActive = false;
@@ -104,11 +106,11 @@ export class TestRoomScene extends CombatScene {
   }
 
   protected helpLines(): string[] {
-    return [...super.helpLines(), 'テスト用: 1 直進撃ち / 2 突進 / 3 扇撃ち / 4 自爆型 / 5 迫撃砲 / 6 狙撃エリート を出す / I 宝箱 / H この表示を切替'];
+    return [...super.helpLines(), 'テスト用: 1 直進撃ち / 2 突進 / 3 扇撃ち / 4 自爆型 / 5 迫撃砲 / 6 狙撃エリート / 7 ボス を出す / I 宝箱 / H この表示を切替'];
   }
 
   protected onDebugKey(code: string): void {
-    const keys: Record<string, string> = { Digit1: 'shooter', Digit2: 'charger', Digit3: 'fan', Digit4: 'bomber', Digit5: 'mortar', Digit6: 'sniper' };
+    const keys: Record<string, string> = { Digit1: 'shooter', Digit2: 'charger', Digit3: 'fan', Digit4: 'bomber', Digit5: 'mortar', Digit6: 'sniper', Digit7: 'boss' };
     if (keys[code]) this.spawnRandom(keys[code]);
     else if (code === 'KeyI') this.openChest();
   }

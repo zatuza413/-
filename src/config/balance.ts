@@ -496,6 +496,22 @@ export const ENEMIES: Record<string, EnemyDef> = {
       initialDelayJitter: 1.5,
     },
   },
+  // ボス本体（行動の数値は BOSS）。接触ダメージなし、押し出しのみ
+  boss: {
+    id: 'boss',
+    name: 'ボス',
+    behavior: 'boss',
+    hp: 2400,
+    speed: 40,
+    radius: 34,
+    color: 0xb04060,
+    elite: false,
+    noContactDamage: true,
+    params: {
+      /** ボス本体へのダメージは、この量ごとに相殺ポイント1（武器・レリックの倍率はかける） */
+      damagePerPoint: 120,
+    },
+  },
   // 攻めの遠距離を試す: 照準線のあと高速弾。柱の陰に隠れながら後退する
   sniper: {
     id: 'sniper',
@@ -519,6 +535,54 @@ export const ENEMIES: Record<string, EnemyDef> = {
       initialDelayJitter: 1.0,
     },
   },
+};
+
+/** ボス（数値はすべて仮） */
+export const BOSS = {
+  // HP・大きさ・速さ・ポイントの数値は ENEMIES.boss にある
+  /** ボスの弾は初速 startRatio で出て、accelTime 秒で最高速まで加速する */
+  bullet: { startRatio: 0.6, accelTime: 0.3 },
+  /** 召喚: warn 秒予告し、自機から minDist 以上離して出す。場に最大 maxAlive 体 */
+  summon: { warn: 0.8, minDist: 200, maxAlive: 4, killPoints: 0.5, damagePointMult: 0.5 },
+  /** P1（HP 100〜70%）: 全方位リング、直進撃ちを召喚 */
+  p1: { until: 0.7, ring: 24, ringInterval: 1.2, ringSpeed: 140, summonEvery: 8, summonId: 'shooter', summonCount: 2 },
+  /** P2（HP 70〜35%）: 4本腕の回転弾、自機狙いの3方向、突進を召喚 */
+  p2: {
+    until: 0.35,
+    arms: 4,
+    /** 腕の回転速度（ラジアン/秒）と、腕1本あたりの発射間隔 */
+    armSpin: 1.2,
+    armInterval: 0.16,
+    armSpeed: 170,
+    aimedEvery: 2.0,
+    aimedCount: 3,
+    aimedSpreadDeg: 24,
+    aimedSpeed: 200,
+    summonEvery: 6,
+    summonId: 'charger',
+    summonCount: 1,
+  },
+  /** P3（HP 35〜0%）: 隙間のない全方位の波（避けられない）で確実に1回被弾させ、直後に弱い雑魚を召喚 */
+  p3: { pulseEvery: 10, pulseWarn: 1.0, pulseSpeed: 260, minionId: 'shooter', minionHp: 20, minionCount: 2, aimedEvery: 2.5 },
+};
+
+/** ショップ（価格はすべて仮） */
+export const SHOP = {
+  /** 並ぶ品の数（アイテムか未所持の武器） */
+  wares: 3,
+  price: { item: 18, weapon: 22, heal: 6 },
+  /** 回復で戻るHP（ハート半分の数） */
+  healAmount: 2,
+};
+
+/** リザルト画面のスロー再生 */
+export const REPLAY = {
+  /** 死ぬ直前の何秒を記録するか */
+  seconds: 5,
+  /** 1秒あたりの記録数 */
+  fps: 30,
+  /** 再生速度（1 = 等速） */
+  speed: 0.35,
 };
 
 /** 敵が出現してから攻撃を始めるまでの猶予（秒） */

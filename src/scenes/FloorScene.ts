@@ -7,6 +7,7 @@ import { generateFloor, TILE_FLOOR, type FloorLayout, type RoomSpec } from '../c
 import { createRng, pick, randInt } from '../core/rng';
 import { Sfx } from '../game/Sfx';
 import { telemetry } from '../game/telemetryStore';
+import type { Enemy } from '../game/Enemy';
 import { CombatScene } from './CombatScene';
 
 /** タイルセット 'tiles' の並び */
@@ -158,9 +159,16 @@ export class FloorScene extends CombatScene {
     if (room.spec.type === 'boss') n = Math.round(n * cfg.bossRoomMultiplier);
     const pool = FLOOR.enemyPool[Math.min(floor, FLOOR.enemyPool.length) - 1];
     const area = Phaser.Geom.Rectangle.Inflate(Phaser.Geom.Rectangle.Clone(room.area), -TILE * 2, -TILE * 2);
-    for (let i = 0; i < n; i++) {
-      const p = this.randomSpawnPoint(area, FLOOR.spawnMinDistance);
-      this.spawnEnemy(pick(Math.random, pool), p.x, p.y);
+    if (room.spec.type === 'boss') {
+      // ボス: 部屋の奥（自機から遠い側）に出す
+      const by = this.player.y > room.area.centerY ? room.area.y + TILE * 4 : room.area.bottom - TILE * 4;
+      this.spawnEnemy('boss', room.area.centerX, by);
+      this.cameras.main.shake(300, 0.006);
+    } else {
+      for (let i = 0; i < n; i++) {
+        const p = this.randomSpawnPoint(area, FLOOR.spawnMinDistance);
+        this.spawnEnemy(pick(Math.random, pool), p.x, p.y);
+      }
     }
     this.setDoors(room, true);
     this.fighting = room;
@@ -168,7 +176,9 @@ export class FloorScene extends CombatScene {
     this.cameras.main.shake(120, 0.003);
   }
 
-  protected onEnemyKilled(): void {
+  protected onEnemyKilled(e: Enemy): void {
+    // ボスを倒したら、残りの召喚雑魚は消える
+    if (e.def.behavior === 'boss') this.clearBossLeftovers();
     const room = this.fighting;
     if (!room || this.enemiesAlive > 0) return;
     // 全滅: 扉が開き、残っている予告はすべて消える

@@ -2,7 +2,7 @@
 // 部屋の作り方と進行は派生クラス（TestRoomScene / FloorScene）が決める。
 
 import Phaser from 'phaser';
-import { CANCEL, CHAIN, CHEST, CONTACT, ENEMIES, ENEMY_BULLET, FX, ITEM_NUM, MORTAR, PLAYER, POINTS, STARTING_WEAPONS, TEST_ROOM_WEAPONS, TOUCH, WEAPONS } from '../config/balance';
+import { BOSS, CANCEL, CHAIN, CHEST, CONTACT, ENEMIES, ENEMY_BULLET, FX, ITEM_NUM, MORTAR, PLAYER, POINTS, STARTING_WEAPONS, TEST_ROOM_WEAPONS, TOUCH, WEAPONS } from '../config/balance';
 import { ITEMS, rollChestChoices, type ChestChoice, type ItemId } from '../core/items';
 import { aimAssist, CurseReturn, effectiveRate, killBonus, PerKeyCooldown, pushAway, rawRate } from '../core/rules';
 import { DamageQueue } from '../core/DamageQueue';
@@ -97,6 +97,10 @@ export abstract class CombatScene extends Phaser.Scene {
   private contactCooldown = new PerKeyCooldown(CONTACT.cooldown);
   /** 迫撃砲の着弾予告 */
   private shells: Array<{ x: number; y: number; t: number; ownerId: number }> = [];
+  /** ボスの召喚予告 */
+  private summons: Array<{ x: number; y: number; t: number; id: string; hp?: number }> = [];
+  /** ボスの避けられない波: 予告 warn 秒のあと、半径 r が広がる */
+  private pulses: Array<{ x: number; y: number; warn: number; r: number; ownerId: number; hit: boolean }> = [];
 
   // アイテムの状態
   /** 最後に撃った時刻（秒）。撃っていない間はポイントが溜まらない */
@@ -164,6 +168,8 @@ export abstract class CombatScene extends Phaser.Scene {
     this.hitstopUntil = 0;
     this.contactCooldown.clear();
     this.shells = [];
+    this.summons = [];
+    this.pulses = [];
     this.lastShotAt = -Infinity;
     this.stillTime = 0;
     this.counterUntil = 0;
@@ -371,7 +377,10 @@ export abstract class CombatScene extends Phaser.Scene {
   /** 敵にダメージを与え、与ダメージ由来のポイントを得る。倒れたら撃破処理 */
   protected damageEnemy(e: Enemy, amount: number, weaponRate: number, dist: number, weapon: WeaponDef | null, extraAdds: number[] = [], extraKillBonus = 0, givePoints = true): void {
     const dealt = Math.min(amount, Math.max(0, e.hp));
-    if (givePoints) this.gainPoints((dealt / CANCEL.damagePerPoint) * this.pointRate(weaponRate, extraAdds), dist, false);
+    // ボスは一定ダメージごとに1ポイント。召喚された雑魚は与ダメージのポイントが半分
+    const perPoint = e.def.params.damagePerPoint ?? CANCEL.damagePerPoint;
+    const summonMult = e.summoned ? BOSS.summon.damagePointMult : 1;
+    if (givePoints) this.gainPoints((dealt / perPoint) * summonMult * this.pointRate(weaponRate, extraAdds), dist, false);
     if (e.damage(amount)) this.killEnemy(e, weapon, dist, extraKillBonus, !givePoints);
   }
 
@@ -513,10 +522,11 @@ export abstract class CombatScene extends Phaser.Scene {
       });
     }
     e.destroy();
-    // 通貨: 1体ごとに +1。危険報酬の財布は、予告がある間に倒すとさらに +1
-    this.run.currency += 1 + (this.has('riskWallet') && hadPending ? ITEM_NUM.walletCurrency : 0);
-    // 呪詛返しで倒した場合はポイントが入らない
-    if (!noPoints) this.gainPoints((e.def.elite ? CANCEL.killPoints.elite : CANCEL.killPoints.normal) + bonus, dist, true);
+    // 通貨: 1体ごとに +1。危険報酬の財布は、予告がある間に倒すとさらに +1。召喚された雑魚は落とさない
+    if (!e.summoned) this.run.currency += 1 + (this.has('riskWallet') && hadPending ? ITEM_NUM.walletCurrency : 0);
+    // 呪詛返しで倒した場合はポイントが入らない。召喚された雑魚の撃破は 0.5
+    const base = e.summoned ? BOSS.summon.killPoints : e.def.elite ? CANCEL.killPoints.elite : CANCEL.killPoints.normal;
+    if (!noPoints) this.gainPoints(base + bonus, dist, true);
     this.onEnemyKilled(e);
   }
 
@@ -902,8 +912,12 @@ export abstract class CombatScene extends Phaser.Scene {
       playerX: this.player.x,
       playerY: this.player.y,
       fire: (e, angle, speed, opts) => {
-        this.fireEnemyBullet(e.uid, e.x, e.y, angle, speed, opts?.big ?? false);
+        this.fireEnemyBullet(e.uid, e.x, e.y, angle, speed, opts?.big ?? false, opts?.accel ?? false);
         Sfx.enemyShoot();
+      },
+      summon: (e, id, count, hp) => this.queueSummons(e, id, count, hp),
+      pulse: (e) => {
+        this.pulses.push({ x: e.x, y: e.y, warn: BOSS.p3.pulseWarn, r: 0, ownerId: e.uid, hit: false });
       },
       lobShell: (e, x, y) => {
         this.shells.push({ x, y, t: MORTAR.warn, ownerId: e.uid });
@@ -927,6 +941,8 @@ export abstract class CombatScene extends Phaser.Scene {
     }
     this.drawTelegraphs();
     this.updateShells(dt);
+    this.updateSummons(dt);
+    this.updatePulses(dt);
 
     tickBullets(this.playerBullets, dt, (b) => this.onPlayerBulletMiss(b));
     tickBullets(this.enemyBullets, dt);
@@ -965,7 +981,7 @@ export abstract class CombatScene extends Phaser.Scene {
     }
   }
 
-  protected fireEnemyBullet(ownerId: number, x: number, y: number, angle: number, speed: number, big = false): void {
+  protected fireEnemyBullet(ownerId: number, x: number, y: number, angle: number, speed: number, big = false, accel = false): void {
     const b = spawnBullet(this.enemyBullets, big ? 'ebullet_big' : 'ebullet');
     if (!b) return;
     b.fire(x, y, angle, speed, {
@@ -973,8 +989,84 @@ export abstract class CombatScene extends Phaser.Scene {
       life: ENEMY_BULLET.lifetime,
       ownerId,
       big,
+      accel: accel ? { startRatio: BOSS.bullet.startRatio, time: BOSS.bullet.accelTime } : undefined,
       hitRadius: big ? ENEMY_BULLET.big.hitRadius : ENEMY_BULLET.hitRadius,
     });
+  }
+
+  /** ボスの召喚: 自機から離れた場所に予告を出す。場の召喚雑魚は最大 maxAlive 体 */
+  private queueSummons(boss: Enemy, id: string, count: number, hp?: number): void {
+    const S = BOSS.summon;
+    const alive = (this.enemies.getChildren() as Enemy[]).filter((e) => e.active && e.summoned).length + this.summons.length;
+    const n = Math.min(count, S.maxAlive - alive);
+    for (let i = 0; i < n; i++) {
+      let p = { x: boss.x, y: boss.y };
+      for (let k = 0; k < 30; k++) {
+        const a = Math.random() * Math.PI * 2;
+        const d = 60 + Math.random() * 160;
+        p = { x: boss.x + Math.cos(a) * d, y: boss.y + Math.sin(a) * d };
+        if (this.isOpenAt(p.x, p.y) && Phaser.Math.Distance.Between(p.x, p.y, this.player.x, this.player.y) >= S.minDist) break;
+      }
+      this.summons.push({ x: p.x, y: p.y, t: S.warn, id, hp });
+    }
+  }
+
+  private updateSummons(dt: number): void {
+    const g = this.telegraphs;
+    for (const s of this.summons) {
+      s.t -= dt;
+      const k = Phaser.Math.Clamp(s.t / BOSS.summon.warn, 0, 1);
+      g.lineStyle(2, 0xc04bff, 0.9).strokeCircle(s.x, s.y, 10 + 18 * k);
+      g.fillStyle(0xc04bff, 0.15).fillCircle(s.x, s.y, 28);
+      if (s.t > 0) continue;
+      const e = this.spawnEnemy(s.id, s.x, s.y);
+      e.summoned = true;
+      if (s.hp) e.hp = s.hp;
+      e.age = 0.4; // 予告を見せた分、出現の猶予を短く
+    }
+    this.summons = this.summons.filter((s) => s.t > 0);
+  }
+
+  /** ボスの波: 予告のあと全方位に広がり、自機に届いたら1回だけ被弾（ダッシュでも避けられない） */
+  private updatePulses(dt: number): void {
+    const g = this.telegraphs;
+    for (const p of this.pulses) {
+      if (p.warn > 0) {
+        p.warn -= dt;
+        const k = 1 - Math.max(0, p.warn) / BOSS.p3.pulseWarn;
+        g.lineStyle(3, 0xff3344, 0.4 + 0.5 * k).strokeCircle(p.x, p.y, 40 + 20 * Math.sin(k * Math.PI * 6));
+        continue;
+      }
+      p.r += BOSS.p3.pulseSpeed * dt;
+      g.lineStyle(10, ENEMY_BULLET.color, 0.85).strokeCircle(p.x, p.y, p.r);
+      g.lineStyle(3, 0xffffff, 0.9).strokeCircle(p.x, p.y, p.r);
+      if (!p.hit && !this.dead && Phaser.Math.Distance.Between(p.x, p.y, this.player.x, this.player.y) <= p.r) {
+        p.hit = true;
+        const r = this.queue.hit('boss', p.ownerId);
+        if (r !== 'ignored') this.recordHit(p.ownerId);
+      }
+    }
+    this.pulses = this.pulses.filter((p) => p.r < 1400);
+  }
+
+  /** ボスを倒したとき: 残った召喚雑魚・召喚予告・波を消す（ポイントなし） */
+  protected clearBossLeftovers(): void {
+    for (const obj of [...this.enemies.getChildren()]) {
+      const e = obj as Enemy;
+      if (!e.active) continue;
+      const src = this.sources.get(e.uid);
+      if (src) src.alive = false;
+      const pop = this.add.circle(e.x, e.y, e.def.radius, 0xffffff, 0.6).setDepth(6);
+      this.tweens.add({ targets: pop, scale: 1.6, alpha: 0, duration: 300, onComplete: () => pop.destroy() });
+      e.destroy();
+    }
+    this.summons = [];
+    this.pulses = [];
+  }
+
+  /** ボスがいれば返す（HPバー用） */
+  protected get boss(): Enemy | null {
+    return (this.enemies.getChildren() as Enemy[]).find((e) => e.active && e.def.behavior === 'boss') ?? null;
   }
 
   /** 迫撃砲: 予告の輪が縮み、0になったら爆発。爆風は予告になる（即確定にはしない） */
@@ -1062,6 +1154,17 @@ export abstract class CombatScene extends Phaser.Scene {
         g.slice(x, y, 11, Math.PI / 2, (Math.PI * 3) / 2, false).fillPath();
       }
       g.lineStyle(2, 0xffffff, 0.8).strokeCircle(x, y, 11);
+    }
+    // ボスのHPバー（3段階の区切りつき）
+    const boss = this.boss;
+    if (boss) {
+      const bw = 420;
+      const bx = this.scale.width / 2 - bw / 2;
+      const by = this.controls.touchMode ? 40 : 14;
+      g.fillStyle(0x221018, 0.9).fillRect(bx, by, bw, 10);
+      g.fillStyle(0xff4466, 1).fillRect(bx, by, bw * Math.max(0, boss.hp / boss.def.hp), 10);
+      g.fillStyle(0xffffff, 0.8).fillRect(bx + bw * BOSS.p1.until - 1, by, 2, 10).fillRect(bx + bw * BOSS.p2.until - 1, by, 2, 10);
+      g.lineStyle(1, 0xffffff, 0.6).strokeRect(bx, by, bw, 10);
     }
     // ダッシュのクールダウン
     const cd = this.player.dashCooldown / PLAYER.dash.cooldown;

@@ -3,6 +3,7 @@
 // 攻撃の前には必ず予備動作（光る・線・着弾予告）を見せる。
 
 import Phaser from 'phaser';
+import { BOSS } from '../config/balance';
 import type { EnemyBehaviorId } from '../core/types';
 import type { Enemy } from './Enemy';
 
@@ -10,7 +11,11 @@ export interface EnemyContext {
   playerX: number;
   playerY: number;
   /** 敵弾を撃つ */
-  fire(enemy: Enemy, angle: number, speed: number, opts?: { big?: boolean }): void;
+  fire(enemy: Enemy, angle: number, speed: number, opts?: { big?: boolean; accel?: boolean }): void;
+  /** ボス: 雑魚を予告つきで召喚する（hp を渡すとその HP で出す） */
+  summon(enemy: Enemy, id: string, count: number, hp?: number): void;
+  /** ボス: 避けられない全方位の波を出す（warn 秒の予告のあと広がる） */
+  pulse(enemy: Enemy): void;
   /** 迫撃砲: (x, y) に着弾予告を出し、時間がたつと爆発する */
   lobShell(enemy: Enemy, x: number, y: number): void;
   /** 2点の間に壁・柱が無いか */
@@ -178,7 +183,82 @@ const sniper: Behavior = (e, ctx, dt) => {
   }
 };
 
+/**
+ * ボス: HP の割合で3段階に切り替わる。弾は初速60%から加速する（避けやすくするため）。
+ * 一定間隔で雑魚を召喚し、相殺の手段を常に用意する。
+ */
+const boss: Behavior = (e, ctx, dt) => {
+  const m = e.mem;
+  const ratio = e.hp / e.def.hp;
+  const phase = ratio > BOSS.p1.until ? 1 : ratio > BOSS.p2.until ? 2 : 3;
+  if (m.phase !== phase) {
+    // 段階が変わったらタイマーを仕切り直す（少し間を置く）
+    m.phase = phase;
+    m.ring = 0;
+    m.summon = phase === 3 ? 0 : -1.5;
+    m.arm = 0;
+    m.aimed = -1;
+    m.pulse = BOSS.p3.pulseEvery - 2;
+  }
+  const toPlayer = Math.atan2(ctx.playerY - e.y, ctx.playerX - e.x);
+  // ゆっくり自機の周りを回る
+  orbit(e, ctx, 230);
+  const fire = (a: number, speed: number) => ctx.fire(e, a, speed, { accel: true });
+
+  if (phase === 1) {
+    const P = BOSS.p1;
+    m.ring += dt;
+    if (m.ring >= P.ringInterval - 0.25) e.telegraph = { type: 'flash', angle: 0, progress: (m.ring - (P.ringInterval - 0.25)) / 0.25, length: 0 };
+    if (m.ring >= P.ringInterval) {
+      m.ring = 0;
+      const off = Math.random() * Math.PI * 2;
+      for (let i = 0; i < P.ring; i++) fire(off + (i / P.ring) * Math.PI * 2, P.ringSpeed);
+    }
+    m.summon += dt;
+    if (m.summon >= P.summonEvery) {
+      m.summon = 0;
+      ctx.summon(e, P.summonId, P.summonCount);
+    }
+  } else if (phase === 2) {
+    const P = BOSS.p2;
+    m.armAngle = (m.armAngle ?? 0) + P.armSpin * dt;
+    m.arm += dt;
+    if (m.arm >= P.armInterval) {
+      m.arm = 0;
+      for (let i = 0; i < P.arms; i++) fire(m.armAngle + (i / P.arms) * Math.PI * 2, P.armSpeed);
+    }
+    m.aimed += dt;
+    if (m.aimed >= P.aimedEvery) {
+      m.aimed = 0;
+      const sp = (P.aimedSpreadDeg * Math.PI) / 180;
+      for (let i = 0; i < P.aimedCount; i++) fire(toPlayer - sp / 2 + (sp * i) / (P.aimedCount - 1), P.aimedSpeed);
+    }
+    m.summon += dt;
+    if (m.summon >= P.summonEvery) {
+      m.summon = 0;
+      ctx.summon(e, P.summonId, P.summonCount);
+    }
+  } else {
+    const P = BOSS.p3;
+    m.pulse += dt;
+    if (m.pulse >= P.pulseEvery) {
+      m.pulse = 0;
+      ctx.pulse(e);
+      ctx.summon(e, P.minionId, P.minionCount, P.minionHp);
+    }
+    // 波の合間は自機狙いの3方向で圧をかける
+    m.aimed += dt;
+    if (m.aimed >= P.aimedEvery) {
+      m.aimed = 0;
+      const A = BOSS.p2;
+      const sp = (A.aimedSpreadDeg * Math.PI) / 180;
+      for (let i = 0; i < A.aimedCount; i++) fire(toPlayer - sp / 2 + (sp * i) / (A.aimedCount - 1), A.aimedSpeed);
+    }
+  }
+};
+
 export const BEHAVIORS: Record<EnemyBehaviorId, Behavior> = {
+  boss,
   shooter,
   charger,
   bomber,

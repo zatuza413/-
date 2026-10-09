@@ -21,8 +21,13 @@ export class Bullet extends Phaser.Physics.Arcade.Image {
   maxBounces = 0;
   /** かすめの判定: 0 まだ / 1 近くにいる / 2 判定済み */
   graze: 0 | 1 | 2 = 0;
+  /** 加速（ボスの弾）: 最高速と、最高速になるまでの残り時間・全体の時間 */
+  private topSpeed = 0;
+  private accelLeft = 0;
+  private accelTime = 0;
+  private startRatio = 1;
 
-  fire(x: number, y: number, angle: number, speed: number, opts: { damage: number; life: number; ownerId?: number; weapon?: WeaponDef; big?: boolean; rateMult?: number; boosted?: boolean; maxBounces?: number; tint?: number; scale?: number; hitRadius: number }): void {
+  fire(x: number, y: number, angle: number, speed: number, opts: { damage: number; life: number; ownerId?: number; weapon?: WeaponDef; big?: boolean; accel?: { startRatio: number; time: number }; rateMult?: number; boosted?: boolean; maxBounces?: number; tint?: number; scale?: number; hitRadius: number }): void {
     this.enableBody(true, x, y, true, true);
     this.setRotation(angle);
     this.damage = opts.damage;
@@ -35,6 +40,11 @@ export class Bullet extends Phaser.Physics.Arcade.Image {
     this.bounces = 0;
     this.maxBounces = opts.maxBounces ?? 0;
     this.graze = 0;
+    this.topSpeed = speed;
+    this.accelTime = opts.accel?.time ?? 0;
+    this.accelLeft = this.accelTime;
+    this.startRatio = opts.accel?.startRatio ?? 1;
+    if (this.accelLeft > 0) speed *= this.startRatio;
     this.setScale(opts.scale ?? 1);
     if (opts.tint !== undefined) this.setTint(opts.tint);
     else this.clearTint();
@@ -53,6 +63,12 @@ export class Bullet extends Phaser.Physics.Arcade.Image {
 
   /** 寿命が尽きたら true */
   tick(dt: number): boolean {
+    if (this.accelLeft > 0) {
+      this.accelLeft = Math.max(0, this.accelLeft - dt);
+      const k = this.startRatio + (1 - this.startRatio) * (1 - this.accelLeft / this.accelTime);
+      const body = this.body as Phaser.Physics.Arcade.Body;
+      body.velocity.setLength(this.topSpeed * k);
+    }
     this.life -= dt;
     if (this.life <= 0) {
       this.kill();

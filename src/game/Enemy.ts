@@ -18,6 +18,10 @@ export class Enemy extends Phaser.Physics.Arcade.Image {
   dir = 0;
   /** 狙いの角度（狙撃の照準など） */
   aimAngle = 0;
+  /** 行動ごとの自由な記録（ボスのタイマーなど） */
+  mem: Record<string, number> = {};
+  /** ボスに召喚された雑魚（撃破0.5ポイント、与ダメージのポイント半分、通貨なし） */
+  summoned = false;
   /** 予備動作の表示（描画は CombatScene がまとめて行う）。sniper は細い照準線 */
   telegraph: { type: 'flash' | 'line'; angle: number; progress: number; length: number; sniper?: boolean } | null = null;
   /** 突進中など、接触ダメージが有効か */
