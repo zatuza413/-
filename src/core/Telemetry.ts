@@ -28,6 +28,31 @@ export interface RoomRecord {
   time: number;
   bands: Record<DistanceBand, BandStat>;
   snipeKills: number;
+  /**
+   * 被弾から相殺までにかかった時間の分布（ストックでの即相殺は除く）。
+   * 0.5秒刻み: [0〜0.5, 0.5〜1, …, 3〜3.5, 3.5秒以上]
+   */
+  cancelLatency: number[];
+}
+
+/** 相殺までの時間の分布の区切り（秒） */
+export const LATENCY_STEP = 0.5;
+export const LATENCY_BINS = 8;
+
+export function latencyBin(sec: number): number {
+  return Math.min(LATENCY_BINS - 1, Math.max(0, Math.floor(sec / LATENCY_STEP)));
+}
+
+/** 分布から中央値（区切りの中点で近似、秒）。データが無ければ null */
+export function latencyMedian(bins: readonly number[]): number | null {
+  const total = bins.reduce((a, b) => a + b, 0);
+  if (total === 0) return null;
+  let acc = 0;
+  for (let i = 0; i < bins.length; i++) {
+    acc += bins[i];
+    if (acc >= total / 2) return (i + 0.5) * LATENCY_STEP;
+  }
+  return null;
 }
 
 export interface RunRecord {
@@ -85,6 +110,7 @@ export function emptyRoom(floor: number, roomType: string, platform: Platform): 
     time: 0,
     bands: { near: band(), mid: band(), far: band() },
     snipeKills: 0,
+    cancelLatency: new Array(LATENCY_BINS).fill(0),
   };
 }
 
@@ -101,6 +127,7 @@ export function sumRooms(rooms: RoomRecord[]): RoomRecord {
     s.wipes += r.wipes;
     s.time += r.time;
     s.snipeKills += r.snipeKills;
+    (r.cancelLatency ?? []).forEach((n, i) => (s.cancelLatency[i] += n));
     for (const b of ['near', 'mid', 'far'] as const) {
       s.bands[b].points += r.bands[b].points;
       s.bands[b].hits += r.bands[b].hits;
@@ -199,8 +226,11 @@ export class Telemetry {
     if (!this.room || amount <= 0) return;
     if (band) this.room.bands[band].points += amount;
   }
-  cancel(): void {
-    if (this.room) this.room.cancels++;
+  /** 相殺した。latency は被弾から相殺までの秒数（ストックでの即相殺なら null） */
+  cancel(latency: number | null = null): void {
+    if (!this.room) return;
+    this.room.cancels++;
+    if (latency !== null) this.room.cancelLatency[latencyBin(latency)]++;
   }
   confirm(reason: ConfirmReason): void {
     if (this.room) this.room.confirms[reason]++;

@@ -2,7 +2,7 @@
 // ボス部屋をクリアすると階段が出て次のフロアへ。最後のフロアならクリア。
 
 import Phaser from 'phaser';
-import { FLOOR, SHOP, TEST_ROOM_WEAPONS, TILE } from '../config/balance';
+import { BOSS, FLOOR, SHOP, TEST_ROOM_WEAPONS, TILE } from '../config/balance';
 import { rollChestChoices, type ChestChoice } from '../core/items';
 import { generateFloor, TILE_FLOOR, type FloorLayout, type RoomSpec } from '../core/floorGen';
 import { createRng, pick, randInt } from '../core/rng';
@@ -169,7 +169,8 @@ export class FloorScene extends CombatScene {
     if (room.spec.type === 'boss') {
       // ボス: 部屋の奥（自機から遠い側）に出す
       const by = this.player.y > room.area.centerY ? room.area.y + TILE * 4 : room.area.bottom - TILE * 4;
-      this.spawnEnemy('boss', room.area.centerX, by);
+      const boss = this.spawnEnemy('boss', room.area.centerX, by);
+      boss.hp = boss.maxHp = BOSS.hpByFloor[Math.min(floor, BOSS.hpByFloor.length) - 1];
       this.cameras.main.shake(300, 0.006);
     } else {
       for (let i = 0; i < n; i++) {

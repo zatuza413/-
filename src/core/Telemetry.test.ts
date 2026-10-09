@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { bandOf, cancelRate, Telemetry, TELEMETRY_KEY, type StorageLike } from './Telemetry';
+import { bandOf, cancelRate, latencyBin, latencyMedian, Telemetry, TELEMETRY_KEY, type StorageLike } from './Telemetry';
 
 function memStorage(): StorageLike & { data: Map<string, string> } {
   const data = new Map<string, string>();
@@ -94,5 +94,24 @@ describe('計測', () => {
     const t2 = new Telemetry({ storage: st });
     expect(t2.runs[0].items).toEqual(['hourglass']);
     expect(JSON.parse(t2.exportJson()).runs).toHaveLength(1);
+  });
+});
+
+describe('被弾から相殺までの時間', () => {
+  it('0.5秒刻みに数え、3.5秒以上はまとめる。ストックの即相殺は数えない', () => {
+    expect(latencyBin(0.2)).toBe(0);
+    expect(latencyBin(2.9)).toBe(5);
+    expect(latencyBin(9)).toBe(7);
+    const t = new Telemetry();
+    t.startRun();
+    t.startRoom(1, 'combat', 'pc');
+    t.cancel(1.2);
+    t.cancel(1.4);
+    t.cancel(2.6);
+    t.cancel(null);
+    const run = t.endRun({ cleared: false, died: true })!;
+    expect(run.rooms[0].cancels).toBe(4);
+    expect(run.rooms[0].cancelLatency).toEqual([0, 0, 2, 0, 0, 1, 0, 0]);
+    expect(latencyMedian(run.rooms[0].cancelLatency)).toBeCloseTo(1.25);
   });
 });

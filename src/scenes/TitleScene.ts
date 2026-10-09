@@ -1,6 +1,7 @@
 import Phaser from 'phaser';
 import { FX } from '../config/balance';
 import { Sfx } from '../game/Sfx';
+import { latencyMedian } from '../core/Telemetry';
 import { exportTelemetry, telemetry } from '../game/telemetryStore';
 
 /** タイトル。相殺の流れを小さく実演しつつ、本編とテスト部屋を選ぶ */
@@ -67,8 +68,12 @@ export class TitleScene extends Phaser.Scene {
       .setOrigin(0.5);
     const sum = telemetry.summary();
     const pct = (r: number | null) => (r === null ? '—' : `${Math.round(r * 100)}%`);
+    const med = (b: number[]) => {
+      const m = latencyMedian(b);
+      return m === null ? '—' : `${m.toFixed(2)}秒`;
+    };
     const info = this.add
-      .text(16, height - 12, `計測: 相殺成功率 PC ${pct(sum.pc.cancelRate)}（${sum.pc.rooms}部屋） / スマホ ${pct(sum.touch.cancelRate)}（${sum.touch.rooms}部屋）  [計測データを書き出す]`, {
+      .text(16, height - 12, `計測: 相殺成功率 PC ${pct(sum.pc.cancelRate)} / スマホ ${pct(sum.touch.cancelRate)}　相殺までの中央値 PC ${med(sum.pc.total.cancelLatency)} / スマホ ${med(sum.touch.total.cancelLatency)}  [書き出す]`, {
         fontFamily: font,
         fontSize: '13px',
         color: '#8888aa',

@@ -189,7 +189,7 @@ const sniper: Behavior = (e, ctx, dt) => {
  */
 const boss: Behavior = (e, ctx, dt) => {
   const m = e.mem;
-  const ratio = e.hp / e.def.hp;
+  const ratio = e.hp / e.maxHp;
   const phase = ratio > BOSS.p1.until ? 1 : ratio > BOSS.p2.until ? 2 : 3;
   if (m.phase !== phase) {
     // 段階が変わったらタイマーを仕切り直す（少し間を置く）
@@ -201,8 +201,8 @@ const boss: Behavior = (e, ctx, dt) => {
     m.pulse = BOSS.p3.pulseEvery - 2;
   }
   const toPlayer = Math.atan2(ctx.playerY - e.y, ctx.playerX - e.x);
-  // ゆっくり自機の周りを回る
-  orbit(e, ctx, 230);
+  // ゆっくり自機の周りを回る（P3 は速くなる）
+  orbit(e, ctx, 230, e.def.speed * (phase === 3 ? BOSS.p3.speedMult : 1));
   const fire = (a: number, speed: number) => ctx.fire(e, a, speed, { accel: true });
 
   if (phase === 1) {
@@ -244,7 +244,17 @@ const boss: Behavior = (e, ctx, dt) => {
     if (m.pulse >= P.pulseEvery) {
       m.pulse = 0;
       ctx.pulse(e);
-      ctx.summon(e, P.minionId, P.minionCount, P.minionHp);
+      // 種類の違う雑魚を1体ずつ（相殺と連鎖の材料）
+      for (const id of P.minionIds) ctx.summon(e, id, 1, P.minionHp);
+    }
+    // 逆回転の二重らせん（波の予告中と直後は止めて、波を読みやすくする）
+    m.spiralA = (m.spiralA ?? 0) + P.spiralSpin * dt;
+    m.spiral = (m.spiral ?? 0) + dt;
+    const calm = m.pulse > P.pulseEvery - P.pulseWarn - 0.5 || m.pulse < 1.2;
+    if (m.spiral >= P.spiralInterval && !calm) {
+      m.spiral = 0;
+      const a = m.spiralA;
+      for (const ang of [a, a + Math.PI, -a + Math.PI / 2, -a - Math.PI / 2]) fire(ang, P.spiralSpeed);
     }
     // 波の合間は自機狙いの3方向で圧をかける
     m.aimed += dt;

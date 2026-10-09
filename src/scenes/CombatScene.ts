@@ -246,7 +246,7 @@ export abstract class CombatScene extends Phaser.Scene {
       if (e.type === 'queued') this.onPendingQueued();
       if (e.type === 'cancelled' && this.has('curseReturn')) this.pendingCurses.push(e.pending.sourceId);
       if (!this.recordTelemetry) return;
-      if (e.type === 'cancelled') telemetry.cancel();
+      if (e.type === 'cancelled') telemetry.cancel(e.viaStock ? null : e.pending.duration - Math.max(0, e.pending.remaining));
       else if (e.type === 'confirmed') telemetry.confirm(e.reason);
       else if (e.type === 'chain' && e.count === this.queue.chainMin) telemetry.chain();
       else if (e.type === 'roomCleared') telemetry.wipe(e.count);
@@ -1146,7 +1146,7 @@ export abstract class CombatScene extends Phaser.Scene {
       if (s.t > 0) continue;
       const e = this.spawnEnemy(s.id, s.x, s.y);
       e.summoned = true;
-      if (s.hp) e.hp = s.hp;
+      if (s.hp) e.hp = e.maxHp = s.hp;
       e.age = 0.4; // 予告を見せた分、出現の猶予を短く
     }
     this.summons = this.summons.filter((s) => s.t > 0);
@@ -1287,7 +1287,7 @@ export abstract class CombatScene extends Phaser.Scene {
       const bx = this.scale.width / 2 - bw / 2;
       const by = this.controls.touchMode ? 40 : 14;
       g.fillStyle(0x221018, 0.9).fillRect(bx, by, bw, 10);
-      g.fillStyle(0xff4466, 1).fillRect(bx, by, bw * Math.max(0, boss.hp / boss.def.hp), 10);
+      g.fillStyle(0xff4466, 1).fillRect(bx, by, bw * Math.max(0, boss.hp / boss.maxHp), 10);
       g.fillStyle(0xffffff, 0.8).fillRect(bx + bw * BOSS.p1.until - 1, by, 2, 10).fillRect(bx + bw * BOSS.p2.until - 1, by, 2, 10);
       g.lineStyle(1, 0xffffff, 0.6).strokeRect(bx, by, bw, 10);
     }

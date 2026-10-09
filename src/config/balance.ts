@@ -74,8 +74,12 @@ export const PLAYER = {
 
 /** 相殺システム（DamageQueue に渡す設定） */
 export const CANCEL = {
-  /** 予告タイマーの初期値（秒） */
-  baseTimer: 3.0,
+  /**
+   * 予告タイマーの初期値（秒）。仮で 3.0 → 3.5。
+   * 見積もり: 被弾→知覚→判断→照準→撃破に、初心者は PC 2.7〜3.0秒・スマホ 3.2〜3.6秒、慣れると 1.7〜2.3秒。
+   * 計測の「被弾から相殺までの時間」で確かめて調整する。
+   */
+  baseTimer: 3.5,
   /** 予告タイマーの上限（アイテム込み、秒） */
   maxTimer: 6.0,
   /** 同時に積める予告の最大数。超えた被弾は即確定（上限超過） */
@@ -539,11 +543,13 @@ export const ENEMIES: Record<string, EnemyDef> = {
 
 /** ボス（数値はすべて仮） */
 export const BOSS = {
-  // HP・大きさ・速さ・ポイントの数値は ENEMIES.boss にある
+  // 大きさ・速さ・ポイントの数値は ENEMIES.boss にある
+  /** フロアごとの HP（仮）。ハンドガンだけ・命中率80%で 約51秒 / 69秒 / 87秒 */
+  hpByFloor: [1400, 1900, 2400],
   /** ボスの弾は初速 startRatio で出て、accelTime 秒で最高速まで加速する */
   bullet: { startRatio: 0.6, accelTime: 0.3 },
   /** 召喚: warn 秒予告し、自機から minDist 以上離して出す。場に最大 maxAlive 体 */
-  summon: { warn: 0.8, minDist: 200, maxAlive: 4, killPoints: 0.5, damagePointMult: 0.5 },
+  summon: { warn: 0.8, minDist: 200, maxAlive: 5, killPoints: 0.5, damagePointMult: 0.5 },
   /** P1（HP 100〜70%）: 全方位リング、直進撃ちを召喚 */
   p1: { until: 0.7, ring: 24, ringInterval: 1.2, ringSpeed: 140, summonEvery: 8, summonId: 'shooter', summonCount: 2 },
   /** P2（HP 70〜35%）: 4本腕の回転弾、自機狙いの3方向、突進を召喚 */
@@ -562,8 +568,24 @@ export const BOSS = {
     summonId: 'charger',
     summonCount: 1,
   },
-  /** P3（HP 35〜0%）: 隙間のない全方位の波（避けられない）で確実に1回被弾させ、直後に弱い雑魚を召喚 */
-  p3: { pulseEvery: 10, pulseWarn: 1.0, pulseSpeed: 260, minionId: 'shooter', minionHp: 20, minionCount: 2, aimedEvery: 2.5 },
+  /**
+   * P3（HP 35〜0%）: 隙間のない全方位の波（避けられない）で確実に1回被弾させ、直後に種類の違う弱い雑魚を3体。
+   * 「当てられた予告を、出てきた雑魚で相殺して連鎖する」リズムを作る。合間は逆回転の二重らせん弾。ボスは速くなる
+   */
+  p3: {
+    pulseEvery: 8,
+    pulseWarn: 1.0,
+    pulseSpeed: 260,
+    minionIds: ['fan', 'bomber', 'shooter'],
+    minionHp: 20,
+    aimedEvery: 2.5,
+    /** らせん: 腕の回転速度（ラジアン/秒）、発射間隔、弾速 */
+    spiralSpin: 1.6,
+    spiralInterval: 0.2,
+    spiralSpeed: 150,
+    /** 移動速度の倍率 */
+    speedMult: 1.4,
+  },
 };
 
 /** ショップ（価格はすべて仮） */

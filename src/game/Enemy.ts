@@ -9,6 +9,8 @@ export class Enemy extends Phaser.Physics.Arcade.Image {
   readonly uid: number;
   readonly def: EnemyDef;
   hp: number;
+  /** 最大HP（フロアでHPが変わるボスなど。割合の計算に使う） */
+  maxHp: number;
   /** 出現からの経過（秒） */
   age = 0;
   /** 行動ごとの状態（behavior が自由に使う） */
@@ -36,6 +38,7 @@ export class Enemy extends Phaser.Physics.Arcade.Image {
     this.uid = nextEnemyId++;
     this.def = def;
     this.hp = def.hp;
+    this.maxHp = def.hp;
     scene.add.existing(this);
     scene.physics.add.existing(this);
     const body = this.body as Phaser.Physics.Arcade.Body;
