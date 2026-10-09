@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest';
-import { POINTS } from '../config/balance';
-import { aimAssist, effectiveRate, killBonus, PerKeyCooldown, pushAway, rawRate } from './rules';
+import { BOSS, POINTS } from '../config/balance';
+import { aimAssist, capWeaponRate, effectiveRate, stepRepel, killBonus, PerKeyCooldown, pushAway, rawRate } from './rules';
 
 const C = POINTS.softcap;
 
@@ -94,5 +94,55 @@ describe('呪詛返し', () => {
     expect(c.trigger(8, 0.5).damage).toBe(20);
     expect(c.trigger(7, 1.0).damage).toBe(20);
     expect(c.trigger(null, 2).damage).toBe(0);
+  });
+});
+
+describe('ボスへの倍率の上限', () => {
+  it('上限を超えた分だけ削る', () => {
+    expect(capWeaponRate(2, 1.2)).toBe(1.2);
+    expect(capWeaponRate(0.3, 1.2)).toBe(0.3);
+    expect(capWeaponRate(2, undefined)).toBe(2);
+  });
+});
+
+describe('張り付きへの返し', () => {
+  const R = BOSS.repel;
+  const run = (s: { close: number; warn: number; cool: number }, dist: number, secs: number) => {
+    let fired = 0;
+    for (let t = 0; t < secs; t += 0.05) if (stepRepel(s, dist, 0.05, R).fire) fired++;
+    return fired;
+  };
+
+  it('離れていれば出ない', () => {
+    expect(run({ close: 0, warn: -1, cool: 0 }, R.range + 1, 10)).toBe(0);
+  });
+
+  it('近くに after 秒いると予告、warn 秒後に撃つ', () => {
+    const s = { close: 0, warn: -1, cool: 0 };
+    expect(run(s, 50, R.after - 0.1)).toBe(0);
+    expect(run(s, 50, 0.15)).toBe(0);
+    expect(s.warn).toBeGreaterThanOrEqual(0);
+    expect(run(s, 50, R.warn + 0.05)).toBe(1);
+  });
+
+  it('予告が始まったら離れても撃つ', () => {
+    const s = { close: 0, warn: 0, cool: 0 };
+    expect(run(s, 999, R.warn + 0.05)).toBe(1);
+  });
+
+  it('張り付き続けると max(after, cooldown) + warn 秒ごとに撃つ', () => {
+    const s = { close: 0, warn: -1, cool: 0 };
+    const per = Math.max(R.after, R.cooldown) + R.warn;
+    expect(run(s, 50, per * 3 + 0.2)).toBe(3);
+  });
+
+  it('出入りを繰り返しても溜まりにくい（離れると2倍で冷める）', () => {
+    const s = { close: 0, warn: -1, cool: 0 };
+    let fired = 0;
+    for (let i = 0; i < 40; i++) {
+      fired += run(s, 50, 0.5);
+      fired += run(s, 999, 0.3);
+    }
+    expect(fired).toBe(0);
   });
 });

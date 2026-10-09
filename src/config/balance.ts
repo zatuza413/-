@@ -386,6 +386,8 @@ export const ENEMY_BULLET = {
   lifetime: 5,
   /** 大きめの弾（狙撃など）。「弾撃ちの銃身」で撃ち落とせる */
   big: { radius: 9, hitRadius: 6, color: 0xff8a3f },
+  /** 硬い弾（ボス本体）: 衝撃波・爆風で消えない。見た目は濃い縁取り */
+  sturdy: { color: 0xc23a8a, rim: 0xffd0f0 },
 };
 
 /** 迫撃砲の着弾 */
@@ -511,9 +513,16 @@ export const ENEMIES: Record<string, EnemyDef> = {
     color: 0xb04060,
     elite: false,
     noContactDamage: true,
+    /** 連鎖の衝撃波でのけぞらない（攻撃が止まらない） */
+    noKnockback: true,
     params: {
       /** ボス本体へのダメージは、この量ごとに相殺ポイント1（武器・レリックの倍率はかける） */
       damagePerPoint: 120,
+      /**
+       * ボス本体に当てたときの武器倍率の上限（距離倍率・跳弾・溜めなどを掛けたあと、レリック加算の前）。
+       * ショットガン至近の×2がボス相手に稼ぎすぎたため（約1.2pt/秒 → 約0.7pt/秒）
+       */
+      pointRateCap: 1.2,
     },
   },
   // 攻めの遠距離を試す: 照準線のあと高速弾。柱の陰に隠れながら後退する
@@ -546,8 +555,18 @@ export const BOSS = {
   // 大きさ・速さ・ポイントの数値は ENEMIES.boss にある
   /** フロアごとの HP（仮）。ハンドガンだけ・命中率80%で 約51秒 / 69秒 / 87秒 */
   hpByFloor: [1400, 1900, 2400],
-  /** ボスの弾は初速 startRatio で出て、accelTime 秒で最高速まで加速する */
+  /**
+   * ボスの弾は初速 startRatio で出て、accelTime 秒で最高速まで加速する。
+   * ボス本体の弾はすべて「硬い弾」: 連鎖の衝撃波とロケットの爆風で消えない（雑魚の弾は消える）
+   */
   bullet: { startRatio: 0.6, accelTime: 0.3 },
+  /**
+   * 張り付きへの返し: 自機が range 以内に after 秒いると、warn 秒光ってから
+   * 至近だけに届く硬い弾の輪（count 発・弾速 speed・寿命 life 秒 → 中心から 約150px まで届く）。
+   * 張り付き続けると max(after, cooldown) + warn 秒ごと。距離70pxからでも歩いて 約0.4秒で抜けられる（ダッシュ不要）。
+   * 「張り付く → 光ったら一歩引く → また寄る」のリズムにする
+   */
+  repel: { range: 130, after: 1.2, warn: 0.5, count: 28, speed: 340, life: 0.35, cooldown: 1.5 },
   /** 召喚: warn 秒予告し、自機から minDist 以上離して出す。場に最大 maxAlive 体 */
   summon: { warn: 0.8, minDist: 200, maxAlive: 5, killPoints: 0.5, damagePointMult: 0.5 },
   /** P1（HP 100〜70%）: 全方位リング、直進撃ちを召喚 */

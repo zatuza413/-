@@ -4,6 +4,7 @@
 
 import Phaser from 'phaser';
 import { BOSS } from '../config/balance';
+import { stepRepel } from '../core/rules';
 import type { EnemyBehaviorId } from '../core/types';
 import type { Enemy } from './Enemy';
 
@@ -11,7 +12,7 @@ export interface EnemyContext {
   playerX: number;
   playerY: number;
   /** 敵弾を撃つ */
-  fire(enemy: Enemy, angle: number, speed: number, opts?: { big?: boolean; accel?: boolean }): void;
+  fire(enemy: Enemy, angle: number, speed: number, opts?: { big?: boolean; accel?: boolean; sturdy?: boolean; life?: number }): void;
   /** ボス: 雑魚を予告つきで召喚する（hp を渡すとその HP で出す） */
   summon(enemy: Enemy, id: string, count: number, hp?: number): void;
   /** ボス: 避けられない全方位の波を出す（warn 秒の予告のあと広がる） */
@@ -203,7 +204,16 @@ const boss: Behavior = (e, ctx, dt) => {
   const toPlayer = Math.atan2(ctx.playerY - e.y, ctx.playerX - e.x);
   // ゆっくり自機の周りを回る（P3 は速くなる）
   orbit(e, ctx, 230, e.def.speed * (phase === 3 ? BOSS.p3.speedMult : 1));
-  const fire = (a: number, speed: number) => ctx.fire(e, a, speed, { accel: true });
+  // ボス本体の弾はすべて硬い弾（衝撃波・爆風で消えない）
+  const fire = (a: number, speed: number) => ctx.fire(e, a, speed, { accel: true, sturdy: true });
+
+  // 張り付きへの返し: 近くに居続けると光ってから、至近だけに届く硬い弾の輪
+  const R = BOSS.repel;
+  const rep = stepRepel(e.repel, Math.hypot(ctx.playerX - e.x, ctx.playerY - e.y), dt, R);
+  if (rep.fire) {
+    const off = Math.random() * Math.PI * 2;
+    for (let i = 0; i < R.count; i++) ctx.fire(e, off + (i / R.count) * Math.PI * 2, R.speed, { sturdy: true, life: R.life });
+  }
 
   if (phase === 1) {
     const P = BOSS.p1;
@@ -265,6 +275,8 @@ const boss: Behavior = (e, ctx, dt) => {
       for (let i = 0; i < A.aimedCount; i++) fire(toPlayer - sp / 2 + (sp * i) / (A.aimedCount - 1), A.aimedSpeed);
     }
   }
+  // 返しの予告は他の予告より優先して見せる
+  if (rep.warnProgress !== null) e.telegraph = { type: 'repel', angle: 0, progress: rep.warnProgress, length: R.speed * R.life + e.def.radius };
 };
 
 export const BEHAVIORS: Record<EnemyBehaviorId, Behavior> = {

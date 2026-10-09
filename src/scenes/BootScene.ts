@@ -62,6 +62,14 @@ export class BootScene extends Phaser.Scene {
     g.lineStyle(2, 0x3a1000, 1).strokeCircle(bs / 2, bs / 2, B.radius);
     g.generateTexture('ebullet_big', bs, bs);
 
+    // 硬い弾（ボス本体）: 衝撃波・爆風で消えない。濃い色に明るい二重の縁
+    const H = ENEMY_BULLET.sturdy;
+    g.clear();
+    g.fillStyle(H.color, 1).fillCircle(es / 2, es / 2, er);
+    g.lineStyle(2, H.rim, 1).strokeCircle(es / 2, es / 2, er - 1);
+    g.fillStyle(H.rim, 1).fillCircle(es / 2, es / 2, er * 0.3);
+    g.generateTexture('ebullet_hard', es, es);
+
     // 壁
     g.clear();
     g.fillStyle(0x3a3a52, 1).fillRect(0, 0, 32, 32);

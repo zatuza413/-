@@ -144,7 +144,8 @@ export class ResultScene extends Phaser.Scene {
 
     for (const e of f.enemies) g.fillStyle(e.color, 1).fillCircle(X(e.x), Y(e.y), Math.max(4, e.r * sc));
     for (const [x, y] of f.playerBullets) g.fillStyle(0xfff27a, 1).fillCircle(X(x), Y(y), 2);
-    for (const [x, y, big] of f.enemyBullets) g.fillStyle(big ? 0xff8a3f : 0xff5ab4, 1).fillCircle(X(x), Y(y), big ? 5 : 3.5);
+    // 種類: 0 ふつう / 1 大きい / 2 硬い（ボス）
+    for (const [x, y, kind] of f.enemyBullets) g.fillStyle(kind === 1 ? 0xff8a3f : kind === 2 ? 0xc23a8a : 0xff5ab4, 1).fillCircle(X(x), Y(y), kind === 1 ? 5 : 3.5);
 
     // 自機と予告リング
     const px = X(f.player.x);

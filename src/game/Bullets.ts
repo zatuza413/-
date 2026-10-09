@@ -12,6 +12,8 @@ export class Bullet extends Phaser.Physics.Arcade.Image {
   weapon: WeaponDef | null = null;
   /** 大きめの敵弾（撃ち落とせる） */
   big = false;
+  /** 硬い弾（ボス本体）: 衝撃波・爆風で消えない */
+  sturdy = false;
   /** 撃った時点の武器固有の倍率（マシンガン） */
   rateMult = 1;
   /** 早撃ちの弾帯で強化された弾倉の弾 */
@@ -27,7 +29,7 @@ export class Bullet extends Phaser.Physics.Arcade.Image {
   private accelTime = 0;
   private startRatio = 1;
 
-  fire(x: number, y: number, angle: number, speed: number, opts: { damage: number; life: number; ownerId?: number; weapon?: WeaponDef; big?: boolean; accel?: { startRatio: number; time: number }; rateMult?: number; boosted?: boolean; maxBounces?: number; tint?: number; scale?: number; hitRadius: number }): void {
+  fire(x: number, y: number, angle: number, speed: number, opts: { damage: number; life: number; ownerId?: number; weapon?: WeaponDef; big?: boolean; sturdy?: boolean; accel?: { startRatio: number; time: number }; rateMult?: number; boosted?: boolean; maxBounces?: number; tint?: number; scale?: number; hitRadius: number }): void {
     this.enableBody(true, x, y, true, true);
     this.setRotation(angle);
     this.damage = opts.damage;
@@ -35,6 +37,7 @@ export class Bullet extends Phaser.Physics.Arcade.Image {
     this.ownerId = opts.ownerId ?? -1;
     this.weapon = opts.weapon ?? null;
     this.big = opts.big ?? false;
+    this.sturdy = opts.sturdy ?? false;
     this.rateMult = opts.rateMult ?? 1;
     this.boosted = opts.boosted ?? false;
     this.bounces = 0;

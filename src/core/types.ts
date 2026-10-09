@@ -69,6 +69,8 @@ export interface EnemyDef {
   elite: boolean;
   /** 接触ダメージが無い（ボス本体など。押し出しだけ行う） */
   noContactDamage?: boolean;
+  /** 連鎖の衝撃波で押し返されず、のけぞらない（ボス） */
+  noKnockback?: boolean;
   /** 行動ごとの追加パラメータ（behavior ごとに意味が変わる） */
   params: Record<string, number>;
 }

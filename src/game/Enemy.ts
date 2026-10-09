@@ -25,7 +25,9 @@ export class Enemy extends Phaser.Physics.Arcade.Image {
   /** ボスに召喚された雑魚（撃破0.5ポイント、与ダメージのポイント半分、通貨なし） */
   summoned = false;
   /** 予備動作の表示（描画は CombatScene がまとめて行う）。sniper は細い照準線 */
-  telegraph: { type: 'flash' | 'line'; angle: number; progress: number; length: number; sniper?: boolean } | null = null;
+  telegraph: { type: 'flash' | 'line' | 'repel'; angle: number; progress: number; length: number; sniper?: boolean } | null = null;
+  /** ボスの張り付きへの返し（core/rules の stepRepel が使う） */
+  repel = { close: 0, warn: -1, cool: 0 };
   /** 突進中など、接触ダメージが有効か */
   contactActive = true;
   /** 衝撃波などでのけぞっている残り時間（秒）。この間は行動しない */

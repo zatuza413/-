@@ -129,3 +129,47 @@ export class CurseReturn {
     this.cd.clear();
   }
 }
+
+/** 敵ごとの武器倍率の上限（ボスなど）。cap が無ければそのまま */
+export function capWeaponRate(rate: number, cap: number | undefined): number {
+  return cap === undefined ? rate : Math.min(rate, cap);
+}
+
+export interface RepelConfig {
+  range: number;
+  after: number;
+  warn: number;
+  cooldown: number;
+}
+
+/**
+ * 張り付きへの返し（ボス）の進み方。
+ * close: 近くにいた時間、warn: 予告の経過（-1 で予告なし）、cool: 次に出せるまでの残り。
+ * 予告が始まったら、自機が離れても最後まで撃つ（光ったら引く、を覚えさせるため）
+ */
+export interface RepelState {
+  close: number;
+  warn: number;
+  cool: number;
+}
+
+export function stepRepel(s: RepelState, dist: number, dt: number, c: RepelConfig): { fire: boolean; warnProgress: number | null } {
+  s.cool = Math.max(0, s.cool - dt);
+  if (s.warn >= 0) {
+    s.warn += dt;
+    if (s.warn >= c.warn) {
+      s.warn = -1;
+      s.close = 0;
+      s.cool = c.cooldown;
+      return { fire: true, warnProgress: null };
+    }
+    return { fire: false, warnProgress: s.warn / c.warn };
+  }
+  // 離れると少しずつ冷める（出入りを繰り返しても溜まりきらないように、2倍の速さで減る）
+  s.close = dist <= c.range ? s.close + dt : Math.max(0, s.close - dt * 2);
+  if (s.close >= c.after && s.cool <= 0) {
+    s.warn = 0;
+    return { fire: false, warnProgress: 0 };
+  }
+  return { fire: false, warnProgress: null };
+}

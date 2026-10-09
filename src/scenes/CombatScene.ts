@@ -4,7 +4,7 @@
 import Phaser from 'phaser';
 import { REPLAY, BOSS, CANCEL, CHAIN, CHEST, CONTACT, ENEMIES, ENEMY_BULLET, FX, ITEM_NUM, MORTAR, PLAYER, POINTS, STARTING_WEAPONS, TEST_ROOM_WEAPONS, TOUCH, WEAPONS } from '../config/balance';
 import { ITEMS, rollChestChoices, type ChestChoice, type ItemId } from '../core/items';
-import { aimAssist, CurseReturn, effectiveRate, killBonus, PerKeyCooldown, pushAway, rawRate } from '../core/rules';
+import { aimAssist, capWeaponRate, CurseReturn, effectiveRate, killBonus, PerKeyCooldown, pushAway, rawRate } from '../core/rules';
 import { DamageQueue, type ConfirmReason, type InstantKind } from '../core/DamageQueue';
 import { ReplayRecorder } from '../core/Replay';
 import type { ResultData } from './ResultScene';
@@ -395,7 +395,9 @@ export abstract class CombatScene extends Phaser.Scene {
     // ボスは一定ダメージごとに1ポイント。召喚された雑魚は与ダメージのポイントが半分
     const perPoint = e.def.params.damagePerPoint ?? CANCEL.damagePerPoint;
     const summonMult = e.summoned ? BOSS.summon.damagePointMult : 1;
-    if (givePoints) this.gainPoints((dealt / perPoint) * summonMult * this.pointRate(weaponRate, extraAdds), dist, false);
+    // ボスは武器倍率に上限（ショットガン至近の×2などで稼ぎすぎないように）
+    const rate = capWeaponRate(weaponRate, e.def.params.pointRateCap);
+    if (givePoints) this.gainPoints((dealt / perPoint) * summonMult * this.pointRate(rate, extraAdds), dist, false);
     if (e.damage(amount)) this.killEnemy(e, weapon, dist, extraKillBonus, !givePoints);
   }
 
@@ -445,7 +447,7 @@ export abstract class CombatScene extends Phaser.Scene {
     let erased = 0;
     for (const obj of this.enemyBullets.getChildren()) {
       const eb = obj as Bullet;
-      if (eb.active && Phaser.Math.Distance.Between(x, y, eb.x, eb.y) <= ex.radius) {
+      if (eb.active && !eb.sturdy && Phaser.Math.Distance.Between(x, y, eb.x, eb.y) <= ex.radius) {
         eb.kill();
         erased++;
       }
@@ -871,7 +873,7 @@ export abstract class CombatScene extends Phaser.Scene {
     const r = Math.min(CHAIN.shockwave.base + CHAIN.shockwave.perChain * (count - this.queue.chainMin), CHAIN.shockwave.max);
     for (const obj of this.enemyBullets.getChildren()) {
       const b = obj as Bullet;
-      if (b.active && Phaser.Math.Distance.Between(px, py, b.x, b.y) <= r) {
+      if (b.active && !b.sturdy && Phaser.Math.Distance.Between(px, py, b.x, b.y) <= r) {
         const pop = this.add.circle(b.x, b.y, 5, 0xffe066).setDepth(54);
         this.tweens.add({ targets: pop, scale: 2.2, alpha: 0, duration: 200, onComplete: () => pop.destroy() });
         b.kill();
@@ -879,7 +881,7 @@ export abstract class CombatScene extends Phaser.Scene {
     }
     for (const obj of this.enemies.getChildren()) {
       const e = obj as Enemy;
-      if (e.active && Phaser.Math.Distance.Between(px, py, e.x, e.y) <= r) e.knockback(px, py, CHAIN.knockback);
+      if (e.active && !e.def.noKnockback && Phaser.Math.Distance.Between(px, py, e.x, e.y) <= r) e.knockback(px, py, CHAIN.knockback);
     }
     // 弾薬回復
     this.weapons.refill(CHAIN.ammoRefillRatioPerChain * (count - 1));
@@ -966,7 +968,7 @@ export abstract class CombatScene extends Phaser.Scene {
     const eb: Array<[number, number, number]> = [];
     for (const o of this.enemyBullets.getChildren()) {
       const b = o as Bullet;
-      if (b.active) eb.push([Math.round(b.x), Math.round(b.y), b.big ? 1 : 0]);
+      if (b.active) eb.push([Math.round(b.x), Math.round(b.y), b.big ? 1 : b.sturdy ? 2 : 0]);
     }
     const pb: Array<[number, number]> = [];
     for (const o of this.playerBullets.getChildren()) {
@@ -1036,7 +1038,7 @@ export abstract class CombatScene extends Phaser.Scene {
       playerX: this.player.x,
       playerY: this.player.y,
       fire: (e, angle, speed, opts) => {
-        this.fireEnemyBullet(e.uid, e.x, e.y, angle, speed, opts?.big ?? false, opts?.accel ?? false);
+        this.fireEnemyBullet(e.uid, e.x, e.y, angle, speed, opts ?? {});
         Sfx.enemyShoot();
       },
       summon: (e, id, count, hp) => this.queueSummons(e, id, count, hp),
@@ -1106,14 +1108,16 @@ export abstract class CombatScene extends Phaser.Scene {
     }
   }
 
-  protected fireEnemyBullet(ownerId: number, x: number, y: number, angle: number, speed: number, big = false, accel = false): void {
-    const b = spawnBullet(this.enemyBullets, big ? 'ebullet_big' : 'ebullet');
+  protected fireEnemyBullet(ownerId: number, x: number, y: number, angle: number, speed: number, opts: { big?: boolean; accel?: boolean; sturdy?: boolean; life?: number } = {}): void {
+    const { big = false, accel = false, sturdy = false } = opts;
+    const b = spawnBullet(this.enemyBullets, big ? 'ebullet_big' : sturdy ? 'ebullet_hard' : 'ebullet');
     if (!b) return;
     b.fire(x, y, angle, speed, {
       damage: 1,
-      life: ENEMY_BULLET.lifetime,
+      life: opts.life ?? ENEMY_BULLET.lifetime,
       ownerId,
       big,
+      sturdy,
       accel: accel ? { startRatio: BOSS.bullet.startRatio, time: BOSS.bullet.accelTime } : undefined,
       hitRadius: big ? ENEMY_BULLET.big.hitRadius : ENEMY_BULLET.hitRadius,
     });
@@ -1230,6 +1234,11 @@ export abstract class CombatScene extends Phaser.Scene {
       } else if (t.type === 'line') {
         g.lineStyle(2 + t.progress * 6, 0xff5050, 0.15 + 0.35 * t.progress);
         g.lineBetween(e.x, e.y, e.x + Math.cos(t.angle) * t.length, e.y + Math.sin(t.angle) * t.length);
+      } else if (t.type === 'repel') {
+        // 張り付きへの返し: 届く範囲を赤く塗り、点滅しながら濃くなる
+        const blink = Math.floor(t.progress * 8) % 2 === 0 ? 1 : 0.6;
+        g.fillStyle(0xff3355, (0.08 + 0.17 * t.progress) * blink).fillCircle(e.x, e.y, t.length);
+        g.lineStyle(2, 0xff3355, 0.5 + 0.5 * t.progress).strokeCircle(e.x, e.y, t.length);
       } else {
         g.lineStyle(2, 0xff8ac8, 0.8);
         g.strokeCircle(e.x, e.y, e.def.radius + 10 * (1 - t.progress) + 2);
