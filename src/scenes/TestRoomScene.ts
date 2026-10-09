@@ -12,6 +12,8 @@ export class TestRoomScene extends CombatScene {
   private waveActive = false;
   private wallRects: Phaser.Geom.Rectangle[] = [];
 
+  protected readonly restartScene = 'TestRoom' as const;
+
   constructor() {
     super('TestRoom');
   }
@@ -95,10 +97,6 @@ export class TestRoomScene extends CombatScene {
 
   protected blocksSight(x: number, y: number): boolean {
     return this.wallRects.some((r) => r.contains(x, y));
-  }
-
-  protected restartAfterDeath(): void {
-    this.scene.restart({});
   }
 
   protected infoLines(): string[] {

@@ -46,6 +46,8 @@ export class FloorScene extends CombatScene {
   private shops: Array<{ obj: Phaser.GameObjects.Container; wares: Array<ChestChoice | null>; away: boolean }> = [];
   private minimap!: Phaser.GameObjects.Graphics;
 
+  protected readonly restartScene = 'Floor' as const;
+
   constructor() {
     super('Floor');
   }
@@ -310,7 +312,7 @@ export class FloorScene extends CombatScene {
       this.stairs = null;
       if (this.run.floor >= FLOOR.count) {
         telemetry.endRun({ cleared: true, died: false });
-        this.scene.start('Clear', { stats: { ...this.queue.stats, confirms: { ...this.queue.stats.confirms } }, hp: this.player.hp });
+        this.scene.start('Result', this.resultData('clear'));
       } else {
         this.run.floor++;
         this.scene.restart({ run: this.run });
@@ -328,10 +330,6 @@ export class FloorScene extends CombatScene {
 
   protected onDied(): void {
     telemetry.endRun({ cleared: false, died: true });
-  }
-
-  protected restartAfterDeath(): void {
-    this.scene.restart({});
   }
 
   protected infoLines(): string[] {

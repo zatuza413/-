@@ -2,10 +2,12 @@
 // 部屋の作り方と進行は派生クラス（TestRoomScene / FloorScene）が決める。
 
 import Phaser from 'phaser';
-import { BOSS, CANCEL, CHAIN, CHEST, CONTACT, ENEMIES, ENEMY_BULLET, FX, ITEM_NUM, MORTAR, PLAYER, POINTS, STARTING_WEAPONS, TEST_ROOM_WEAPONS, TOUCH, WEAPONS } from '../config/balance';
+import { REPLAY, BOSS, CANCEL, CHAIN, CHEST, CONTACT, ENEMIES, ENEMY_BULLET, FX, ITEM_NUM, MORTAR, PLAYER, POINTS, STARTING_WEAPONS, TEST_ROOM_WEAPONS, TOUCH, WEAPONS } from '../config/balance';
 import { ITEMS, rollChestChoices, type ChestChoice, type ItemId } from '../core/items';
 import { aimAssist, CurseReturn, effectiveRate, killBonus, PerKeyCooldown, pushAway, rawRate } from '../core/rules';
-import { DamageQueue } from '../core/DamageQueue';
+import { DamageQueue, type ConfirmReason, type InstantKind } from '../core/DamageQueue';
+import { ReplayRecorder } from '../core/Replay';
+import type { ResultData } from './ResultScene';
 import type { WeaponDef } from '../core/types';
 import { beamRate, bounceRate, damageAt, erasePoints, holdRate, pointRateAt } from '../core/weaponMath';
 import { Bullet, createBulletGroup, spawnBullet, tickBullets } from '../game/Bullets';
@@ -16,7 +18,7 @@ import type { EnemyContext } from '../game/enemyBehaviors';
 import { Player } from '../game/Player';
 import { Sfx } from '../game/Sfx';
 import { WeaponSystem } from '../game/WeaponSystem';
-import { bandOf, cancelRate, type DistanceBand } from '../core/Telemetry';
+import { bandOf, type DistanceBand } from '../core/Telemetry';
 import { telemetry } from '../game/telemetryStore';
 
 /** フロアをまたいで引き継ぐ状態 */
@@ -121,6 +123,12 @@ export abstract class CombatScene extends Phaser.Scene {
   private curse = new CurseReturn(ITEM_NUM.curse.damage, ITEM_NUM.curse.cooldown);
   /** 呪詛返しの対象（相殺イベントの中で敵を倒さないよう、次のフレームで処理する） */
   private pendingCurses: Array<number | null> = [];
+  /** 死ぬ直前のスロー再生の記録 */
+  private recorder = new ReplayRecorder(REPLAY.seconds, REPLAY.fps);
+  /** 最後の確定（死因） */
+  private lastConfirm: ResultData['cause'] = null;
+  /** 「もう一度」で始めるシーン */
+  protected abstract readonly restartScene: 'Floor' | 'TestRoom';
   /** 宝箱の3択を選んでいる間は止める */
   protected choosing = false;
 
@@ -135,8 +143,6 @@ export abstract class CombatScene extends Phaser.Scene {
   protected abstract buildWorld(): { x: number; y: number };
   /** 毎フレームの進行（部屋の出入り・ウェーブなど） */
   protected abstract updateWorld(dt: number): void;
-  /** 死亡後の再挑戦 */
-  protected abstract restartAfterDeath(): void;
   /** 敵が倒されたあと（部屋の全滅判定など） */
   protected onEnemyKilled(_e: Enemy): void {}
   /** HUD 左上に出す追加の行 */
@@ -181,6 +187,8 @@ export abstract class CombatScene extends Phaser.Scene {
     this.curse.clear();
     this.choosing = false;
     this.resetRoomCounters();
+    this.recorder.clear();
+    this.lastConfirm = null;
 
     this.queue = this.run.queue;
     this.weapons = this.run.weapons;
@@ -228,7 +236,13 @@ export abstract class CombatScene extends Phaser.Scene {
       applyChainBonus: (n) => this.applyChainBonus(n),
     });
     this.unsubscribeQueue = this.queue.on((e) => {
-      if (e.type === 'confirmed') this.onConfirmed(e.damage);
+      if (e.type === 'queued') this.recorder.event('hit');
+      if (e.type === 'cancelled') this.recorder.event('cancel');
+      if (e.type === 'confirmed') {
+        this.recorder.event(`confirm:${e.reason}`);
+        this.rememberConfirm(e.reason, e.kind, e.sourceId, e.pointShort);
+        this.onConfirmed(e.damage);
+      }
       if (e.type === 'queued') this.onPendingQueued();
       if (e.type === 'cancelled' && this.has('curseReturn')) this.pendingCurses.push(e.pending.sourceId);
       if (!this.recordTelemetry) return;
@@ -899,27 +913,74 @@ export abstract class CombatScene extends Phaser.Scene {
     this.time.delayedCall(600, () => this.input.once('pointerdown', onTap));
   }
 
+  /** 確定の理由と、足りなかった分を覚えておく（リザルトの死因） */
+  private rememberConfirm(reason: ConfirmReason, kind: string, sourceId: number | null, pointShort: number): void {
+    const instantLabel: Partial<Record<InstantKind, string>> = { pit: '落とし穴', selfExplosion: '自分の爆風', sacrifice: '代償' };
+    const label = { timeout: '時間切れ', overflow: '上限超過', instant: '即時確定' }[reason];
+    const src = sourceId !== null ? (this.sources.get(sourceId)?.name ?? null) : null;
+    let short: string | null = null;
+    if (reason === 'timeout') short = pointShort >= 0.999 ? 'あと1体' : `あと${Math.ceil(pointShort * 100)}%`;
+    else if (reason === 'instant') short = instantLabel[kind as InstantKind] ?? null;
+    else short = '予告が満杯';
+    this.lastConfirm = { reason, label, source: src, short };
+  }
+
   private die(): void {
     this.dead = true;
     Sfx.death();
     this.physics.world.pause();
     this.onDied();
+    this.recorder.flush(() => this.snapshot());
+    const result = this.resultData('death');
+    // 最後の瞬間を見せてからリザルトへ
+    const { width, height } = this.scale;
+    this.add.rectangle(0, 0, width, height, 0x000000, 0.45).setOrigin(0).setScrollFactor(0).setDepth(200);
+    this.add
+      .text(width / 2, height / 2, '相殺に失敗した', { fontFamily: 'sans-serif', fontSize: '34px', fontStyle: 'bold', color: '#ff6680', stroke: '#000', strokeThickness: 6 })
+      .setOrigin(0.5)
+      .setScrollFactor(0)
+      .setDepth(201);
+    this.time.delayedCall(1300, () => this.scene.start('Result', result));
+  }
+
+  /** リザルト画面に渡すもの */
+  protected resultData(mode: ResultData['mode']): ResultData {
     const s = this.queue.stats;
-    const rate = cancelRate(s.cancels, s.confirms);
-    this.showOverlay(
-      [
-        '相殺に失敗した',
-        '',
-        `被弾 ${s.hits}   相殺 ${s.cancels}   連鎖 ${s.chains}（最大 ×${s.bestChain}）`,
-        `確定  時間切れ ${s.confirms.timeout} / 上限超過 ${s.confirms.overflow} / 即時 ${s.confirms.instant}`,
-        `相殺成功率 ${rate === null ? '—' : Math.round(rate * 100) + '%'}`,
-        '',
-        `部屋全滅で消えた予告 ${s.roomClearWipes}（相殺・成功率には数えない）`,
-        '',
-        this.controls.touchMode ? 'タップで再挑戦' : 'クリックで再挑戦',
-      ],
-      () => this.restartAfterDeath(),
-    );
+    return {
+      mode,
+      restart: this.restartScene,
+      floor: this.run.floor,
+      stats: { ...s, confirms: { ...s.confirms } },
+      cause: this.lastConfirm,
+      frames: [...this.recorder.all],
+      items: this.run.items.map((id) => ITEMS[id].name),
+      currency: this.run.currency,
+    };
+  }
+
+  /** スロー再生用の状態のスナップショット */
+  private snapshot() {
+    const enemies = (this.enemies.getChildren() as Enemy[])
+      .filter((e) => e.active)
+      .map((e) => ({ x: Math.round(e.x), y: Math.round(e.y), r: e.def.radius, color: e.def.color, boss: e.def.behavior === 'boss' || undefined }));
+    const eb: Array<[number, number, number]> = [];
+    for (const o of this.enemyBullets.getChildren()) {
+      const b = o as Bullet;
+      if (b.active) eb.push([Math.round(b.x), Math.round(b.y), b.big ? 1 : 0]);
+    }
+    const pb: Array<[number, number]> = [];
+    for (const o of this.playerBullets.getChildren()) {
+      const b = o as Bullet;
+      if (b.active) pb.push([Math.round(b.x), Math.round(b.y)]);
+    }
+    return {
+      t: this.time.now / 1000,
+      player: { x: Math.round(this.player.x), y: Math.round(this.player.y), aim: this.player.aim, hp: this.player.hp, maxHp: this.player.maxHp },
+      enemies,
+      enemyBullets: eb,
+      playerBullets: pb,
+      pending: this.queue.pending.map((p) => ({ remaining: p.remaining, duration: p.duration })),
+    };
   }
 
   update(time: number, deltaMs: number): void {
@@ -1020,6 +1081,7 @@ export abstract class CombatScene extends Phaser.Scene {
     const nemesis = (this.enemies.getChildren() as Enemy[]).filter((e) => e.active && nemesisIds.has(e.uid)).map((e) => ({ x: e.x, y: e.y, r: e.def.radius }));
     this.presenter.drawKillMarks(killable, nemesis);
 
+    this.recorder.tick(dt, () => this.snapshot());
     this.updateWorld(dt);
     if (this.dead || !this.sys.isActive()) return;
     this.updateHud();
