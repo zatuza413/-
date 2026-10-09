@@ -2,7 +2,8 @@
 // ボス部屋をクリアすると階段が出て次のフロアへ。最後のフロアならクリア。
 
 import Phaser from 'phaser';
-import { FLOOR, TILE } from '../config/balance';
+import { FLOOR, SHOP, TEST_ROOM_WEAPONS, TILE } from '../config/balance';
+import { rollChestChoices, type ChestChoice } from '../core/items';
 import { generateFloor, TILE_FLOOR, type FloorLayout, type RoomSpec } from '../core/floorGen';
 import { createRng, pick, randInt } from '../core/rng';
 import { Sfx } from '../game/Sfx';
@@ -27,7 +28,7 @@ interface RoomState {
 }
 
 const ROOM_LABEL: Partial<Record<RoomSpec['type'], string>> = {
-  shop: 'ショップ（段階5で実装）',
+  shop: 'ショップ',
   treasure: '宝箱',
   boss: 'ボス部屋',
 };
@@ -41,6 +42,8 @@ export class FloorScene extends CombatScene {
   private fighting: RoomState | null = null;
   private chests: Array<{ obj: Phaser.GameObjects.Container; opened: boolean }> = [];
   private stairs: Phaser.GameObjects.Container | null = null;
+  /** ショップ: カウンターと品物（売れたら null）。away は一度離れたか（離れるまで開き直さない） */
+  private shops: Array<{ obj: Phaser.GameObjects.Container; wares: Array<ChestChoice | null>; away: boolean }> = [];
   private minimap!: Phaser.GameObjects.Graphics;
 
   constructor() {
@@ -52,6 +55,7 @@ export class FloorScene extends CombatScene {
     this.current = null;
     this.fighting = null;
     this.chests = [];
+    this.shops = [];
     this.stairs = null;
     this.recordTelemetry = true;
     if (!this.run.telemetryStarted) {
@@ -99,6 +103,7 @@ export class FloorScene extends CombatScene {
         this.add.text(area.centerX, area.y + 28, label, { fontFamily: 'sans-serif', fontSize: '16px', color: '#8888aa' }).setOrigin(0.5).setDepth(-4);
       }
       if (spec.type === 'treasure') this.addChest(area.centerX, area.centerY);
+      if (spec.type === 'shop') this.addShop(area.centerX, area.centerY);
     }
 
     this.minimap = this.add.graphics().setScrollFactor(0).setDepth(150);
@@ -197,6 +202,68 @@ export class FloorScene extends CombatScene {
     this.chests.push({ obj, opened: false });
   }
 
+  private addShop(x: number, y: number): void {
+    const counter = this.add.rectangle(0, 0, 70, 30, 0x2a4a2a).setStrokeStyle(2, 0x7ee07e);
+    const sign = this.add.text(0, 0, '店', { fontFamily: 'sans-serif', fontSize: '16px', fontStyle: 'bold', color: '#c8ffc8' }).setOrigin(0.5);
+    const obj = this.add.container(x, y, [counter, sign]).setDepth(3);
+    const wares = rollChestChoices(Math.random, {
+      ownedItems: this.run.items,
+      ownedWeapons: this.weapons.slots.map((w) => w.def.id),
+      allWeapons: TEST_ROOM_WEAPONS,
+      n: SHOP.wares,
+    });
+    this.shops.push({ obj, wares, away: true });
+  }
+
+  /** ショップを開く: 品物と回復を並べる。買ったら開き直して続けて買える */
+  private openShop(shop: (typeof this.shops)[number]): void {
+    const owned = (c: ChestChoice) => (c.kind === 'item' ? this.run.items.includes(c.id) : this.weapons.has(c.id));
+    const wares = shop.wares.map((c) => (c && !owned(c) ? c : null));
+    const list = wares.map((c, i) => ({ c, i })).filter((x): x is { c: ChestChoice; i: number } => x.c !== null);
+    const priceOf = (c: ChestChoice) => (c.kind === 'item' ? SHOP.price.item : SHOP.price.weapon);
+    const money = this.run.currency;
+    const full = this.player.hp >= this.player.maxHp;
+    const cards = [
+      ...list.map(({ c }) => ({ ...this.choiceCard(c), footer: `通貨 ${priceOf(c)}`, disabled: money < priceOf(c) })),
+      {
+        label: '回復',
+        name: 'ハート1つ回復',
+        desc: full ? 'HPは満タン' : `HPを${SHOP.healAmount / 2}つ分回復する`,
+        color: 0xff6688,
+        footer: `通貨 ${SHOP.price.heal}`,
+        disabled: full || money < SHOP.price.heal,
+      },
+    ];
+    this.showCards({
+      title: `ショップ（所持 通貨 ${money}）`,
+      cards,
+      onPick: (k) => {
+        if (k < list.length) {
+          const { c, i } = list[k];
+          if (this.run.currency < priceOf(c)) return this.refuse(shop, '通貨が足りない');
+          this.run.currency -= priceOf(c);
+          shop.wares[i] = null;
+          this.acquire(c);
+        } else {
+          if (this.player.hp >= this.player.maxHp) return this.refuse(shop, 'HPは満タン');
+          if (this.run.currency < SHOP.price.heal) return this.refuse(shop, '通貨が足りない');
+          this.run.currency -= SHOP.price.heal;
+          this.heal(SHOP.healAmount);
+          Sfx.stock();
+          this.presenter.floatText(this.player.x, this.player.y - 44, '回復', '#ff6688', 18);
+        }
+        this.openShop(shop);
+      },
+      onClose: () => {},
+    });
+  }
+
+  private refuse(shop: (typeof this.shops)[number], msg: string): void {
+    Sfx.absorb();
+    this.presenter.floatText(this.player.x, this.player.y - 44, msg, '#ff8888', 16);
+    this.openShop(shop);
+  }
+
   private spawnStairs(x: number, y: number): void {
     const last = this.run.floor >= FLOOR.count;
     const ring = this.add.circle(0, 0, 26, 0x000000).setStrokeStyle(3, 0x9fe8ff);
@@ -225,6 +292,17 @@ export class FloorScene extends CombatScene {
       this.weapons.refillAll();
       this.openChest();
       return;
+    }
+
+    // ショップ: カウンターに触れると開く（一度離れるまで開き直さない）
+    for (const sh of this.shops) {
+      const d = Phaser.Math.Distance.Between(px, py, sh.obj.x, sh.obj.y);
+      if (d > 80) sh.away = true;
+      else if (d < 40 && sh.away) {
+        sh.away = false;
+        this.openShop(sh);
+        return;
+      }
     }
 
     // 階段

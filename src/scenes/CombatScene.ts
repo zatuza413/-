@@ -337,8 +337,9 @@ export abstract class CombatScene extends Phaser.Scene {
       switchWeapon: (d) => this.weapons.switch(d),
       debugKey: (code) => {
         if (this.choosing) {
-          const i = ['Digit1', 'Digit2', 'Digit3'].indexOf(code);
-          if (i >= 0) this.chooseChest(i);
+          const i = ['Digit1', 'Digit2', 'Digit3', 'Digit4'].indexOf(code);
+          if (i >= 0) this.pickCard(i);
+          else if (code === 'Escape' && this.cardClose) this.closeCards(true);
           return;
         }
         if (this.dead) return;
@@ -672,13 +673,112 @@ export abstract class CombatScene extends Phaser.Scene {
     }
   }
 
-  // ------------------------------------------------------------ 宝箱の3択
+  // ------------------------------------------------------------ カード選択（宝箱・ショップ）
 
-  private chestCards: Phaser.GameObjects.GameObject[] = [];
-  private chestChoices: ChestChoice[] = [];
-  private chestDone: (() => void) | null = null;
+  private cardObjs: Phaser.GameObjects.GameObject[] = [];
+  private cardPick: ((i: number) => void) | null = null;
+  private cardCount = 0;
+  private cardClose: (() => void) | null = null;
 
-  /** 宝箱を開ける: 3つの候補から1つ選ぶ。選ぶまでゲームは止まる */
+  /**
+   * カードを並べて1つ選ばせる。選ぶまでゲームは止まる。
+   * onClose を渡すと「閉じる」で選ばずに閉じられる（ショップ）。
+   */
+  protected showCards(opts: {
+    title: string;
+    cards: Array<{ label: string; name: string; desc: string; footer?: string; color: number; disabled?: boolean }>;
+    onPick: (i: number) => void;
+    onClose?: () => void;
+  }): void {
+    this.choosing = true;
+    this.physics.world.pause();
+    this.cardPick = opts.onPick;
+    this.cardClose = opts.onClose ?? null;
+    this.cardCount = opts.cards.length;
+    const { width, height } = this.scale;
+    const depth = 300;
+    const bg = this.add.rectangle(0, 0, width, height, 0x000000, 0.72).setOrigin(0).setScrollFactor(0).setDepth(depth);
+    const title = this.add
+      .text(width / 2, 56, opts.title, { fontFamily: 'sans-serif', fontSize: '24px', fontStyle: 'bold', color: '#ffe08a' })
+      .setOrigin(0.5)
+      .setScrollFactor(0)
+      .setDepth(depth + 1);
+    this.cardObjs = [bg, title];
+    const n = opts.cards.length;
+    const gap = 20;
+    const cw = Math.min(250, (width - 40 - gap * (n - 1)) / n);
+    const x0 = width / 2 - (cw * n + gap * (n - 1)) / 2 + cw / 2;
+    const y = height / 2 + 10;
+    opts.cards.forEach((c, i) => {
+      const x = x0 + i * (cw + gap);
+      const alpha = c.disabled ? 0.45 : 1;
+      const card = this.add.rectangle(x, y, cw, 270, 0x1c1c2c, 1).setStrokeStyle(2, c.color, alpha).setScrollFactor(0).setDepth(depth + 1);
+      card.setInteractive({ useHandCursor: true }).on('pointerdown', () => this.pickCard(i));
+      const t1 = this.add.text(x, y - 108, `${i + 1}  ${c.label}`, { fontFamily: 'sans-serif', fontSize: '13px', color: '#8888aa' }).setOrigin(0.5).setScrollFactor(0).setDepth(depth + 2);
+      const t2 = this.add
+        .text(x, y - 76, c.name, { fontFamily: 'sans-serif', fontSize: '19px', fontStyle: 'bold', color: '#ffffff' })
+        .setOrigin(0.5)
+        .setScrollFactor(0)
+        .setDepth(depth + 2)
+        .setAlpha(alpha);
+      const t3 = this.add
+        .text(x, y - 44, c.desc, { fontFamily: 'sans-serif', fontSize: '14px', color: '#d0d0e0', align: 'center', wordWrap: { width: cw - 26, useAdvancedWrap: true } })
+        .setOrigin(0.5, 0)
+        .setScrollFactor(0)
+        .setDepth(depth + 2)
+        .setAlpha(alpha);
+      this.cardObjs.push(card, t1, t2, t3);
+      if (c.footer) {
+        this.cardObjs.push(
+          this.add
+            .text(x, y + 112, c.footer, { fontFamily: 'sans-serif', fontSize: '17px', fontStyle: 'bold', color: c.disabled ? '#885555' : '#ffe066' })
+            .setOrigin(0.5)
+            .setScrollFactor(0)
+            .setDepth(depth + 2),
+        );
+      }
+    });
+    if (opts.onClose) {
+      const close = this.add
+        .text(width / 2, height - 36, '閉じる（Esc）', { fontFamily: 'sans-serif', fontSize: '18px', color: '#9fe8ff', backgroundColor: '#1c1c2c', padding: { x: 18, y: 8 } })
+        .setOrigin(0.5)
+        .setScrollFactor(0)
+        .setDepth(depth + 2)
+        .setInteractive({ useHandCursor: true });
+      close.on('pointerdown', () => this.closeCards(true));
+      this.cardObjs.push(close);
+    }
+  }
+
+  private pickCard(i: number): void {
+    if (!this.choosing || i < 0 || i >= this.cardCount) return;
+    const pick = this.cardPick;
+    this.closeCards(false);
+    pick?.(i);
+  }
+
+  private closeCards(byUser: boolean): void {
+    if (!this.choosing) return;
+    for (const o of this.cardObjs) o.destroy();
+    this.cardObjs = [];
+    this.choosing = false;
+    this.physics.world.resume();
+    const close = this.cardClose;
+    this.cardPick = null;
+    this.cardClose = null;
+    if (byUser) close?.();
+  }
+
+  /** 候補（アイテムか武器）をカードの見た目に */
+  protected choiceCard(c: ChestChoice): { label: string; name: string; desc: string; color: number } {
+    if (c.kind === 'item') {
+      const d = ITEMS[c.id];
+      return { label: d.category === 'relic' ? 'レリック' : '相殺', name: d.name, desc: d.desc, color: 0xffe08a };
+    }
+    return { label: '武器', name: WEAPONS[c.id].name, desc: this.weaponDesc(c.id), color: 0x9fe8ff };
+  }
+
+  /** 宝箱を開ける: 3つの候補から1つ選ぶ */
   protected openChest(onDone?: () => void): void {
     const choices = rollChestChoices(Math.random, {
       ownedItems: this.run.items,
@@ -692,38 +792,13 @@ export abstract class CombatScene extends Phaser.Scene {
       onDone?.();
       return;
     }
-    this.choosing = true;
-    this.chestChoices = choices;
-    this.chestDone = onDone ?? null;
-    this.physics.world.pause();
-    const { width, height } = this.scale;
-    const bg = this.add.rectangle(0, 0, width, height, 0x000000, 0.72).setOrigin(0).setScrollFactor(0).setDepth(300);
-    const title = this.add
-      .text(width / 2, 70, '宝箱: 1つ選ぶ', { fontFamily: 'sans-serif', fontSize: '24px', fontStyle: 'bold', color: '#ffe08a' })
-      .setOrigin(0.5)
-      .setScrollFactor(0)
-      .setDepth(301);
-    this.chestCards = [bg, title];
-    const cw = 250;
-    const gap = 24;
-    const x0 = width / 2 - (cw * choices.length + gap * (choices.length - 1)) / 2 + cw / 2;
-    choices.forEach((c, i) => {
-      const x = x0 + i * (cw + gap);
-      const y = height / 2 + 10;
-      const isItem = c.kind === 'item';
-      const name = isItem ? ITEMS[c.id].name : WEAPONS[c.id].name;
-      const kind = isItem ? (ITEMS[c.id].category === 'relic' ? 'レリック' : '相殺') : '武器';
-      const desc = isItem ? ITEMS[c.id].desc : this.weaponDesc(c.id);
-      const card = this.add.rectangle(x, y, cw, 260, 0x1c1c2c, 1).setStrokeStyle(2, isItem ? 0xffe08a : 0x9fe8ff).setScrollFactor(0).setDepth(301);
-      card.setInteractive({ useHandCursor: true }).on('pointerdown', () => this.chooseChest(i));
-      const t1 = this.add.text(x, y - 100, `${i + 1}  ${kind}`, { fontFamily: 'sans-serif', fontSize: '13px', color: '#8888aa' }).setOrigin(0.5).setScrollFactor(0).setDepth(302);
-      const t2 = this.add.text(x, y - 66, name, { fontFamily: 'sans-serif', fontSize: '20px', fontStyle: 'bold', color: '#ffffff' }).setOrigin(0.5).setScrollFactor(0).setDepth(302);
-      const t3 = this.add
-        .text(x, y - 30, desc, { fontFamily: 'sans-serif', fontSize: '14px', color: '#d0d0e0', align: 'center', wordWrap: { width: cw - 30, useAdvancedWrap: true } })
-        .setOrigin(0.5, 0)
-        .setScrollFactor(0)
-        .setDepth(302);
-      this.chestCards.push(card, t1, t2, t3);
+    this.showCards({
+      title: '宝箱: 1つ選ぶ',
+      cards: choices.map((c) => this.choiceCard(c)),
+      onPick: (i) => {
+        this.acquire(choices[i]);
+        onDone?.();
+      },
     });
   }
 
@@ -736,18 +811,6 @@ export abstract class CombatScene extends Phaser.Scene {
       rocket: '爆風で敵弾を消すとポイント。近いと自爆',
     };
     return d[id] ?? '';
-  }
-
-  private chooseChest(i: number): void {
-    if (!this.choosing || i < 0 || i >= this.chestChoices.length) return;
-    const c = this.chestChoices[i];
-    for (const o of this.chestCards) o.destroy();
-    this.chestCards = [];
-    this.choosing = false;
-    this.physics.world.resume();
-    this.acquire(c);
-    this.chestDone?.();
-    this.chestDone = null;
   }
 
   /** 与ダメージ由来のポイント倍率: 武器の倍率 × (1 + レリック加算) を上限つきで */
