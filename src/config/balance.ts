@@ -90,8 +90,12 @@ export const CANCEL = {
   postConfirmInvuln: 0.8,
   /** 確定1回で減るHP（ハート半分 = 1） */
   confirmDamage: 1,
-  /** 予告が無いときに保持できる相殺ポイント（ストック）の上限 */
-  baseMaxStock: 1,
+  /**
+   * 予告が無いときに保持できる相殺ポイント（ストック）の上限。基本は 0（「貯蓄の指輪」で 1）。
+   * 1 だと通常戦闘の被弾の7〜9割をストックが即座に消し、予告のタイマーがほぼ見えなかった（自動プレイテスト）。
+   * ストックで消えた予告は連鎖に数えない（勝手に連鎖しないように）
+   */
+  baseMaxStock: 0,
   /** この秒数以内に次の相殺が起きると連鎖が続く */
   chainWindow: 1.5,
   /** 連鎖の受付時間の上限（連鎖の鐘込み） */
@@ -115,8 +119,11 @@ export const CANCEL = {
 
 /** 連鎖ボーナス。count は連鎖数（2以上） */
 export const CHAIN = {
-  /** 衝撃波（敵弾を消す）の半径: base + perChain × (count - chainMin)、上限 max */
-  shockwave: { base: 140, perChain: 70, max: 420 },
+  /**
+   * 衝撃波（敵弾を消す）の半径: base + perChain × (count - chainMin)、上限 max。
+   * ボスの硬い弾は sturdyRadius 以内だけ消える（張り付きの自衛は残し、生まれた弾がまとめて消えるのは防ぐ）
+   */
+  shockwave: { base: 140, perChain: 70, max: 420, sturdyRadius: 90 },
   /** 弾薬回復: マガジン容量 × ratioPerChain × (count - 1)、上限はマガジン満タン */
   ammoRefillRatioPerChain: 0.35,
   /** 攻撃力アップ: +perChain × (count - 1)、上限 max。duration 秒持続（連鎖が伸びると更新） */
@@ -386,7 +393,7 @@ export const ENEMY_BULLET = {
   lifetime: 5,
   /** 大きめの弾（狙撃など）。「弾撃ちの銃身」で撃ち落とせる */
   big: { radius: 9, hitRadius: 6, color: 0xff8a3f },
-  /** 硬い弾（ボス本体）: 衝撃波・爆風で消えない。見た目は濃い縁取り */
+  /** 硬い弾（ボス本体）: 衝撃波では自機のすぐ周りしか消えない。見た目は濃い縁取り */
   sturdy: { color: 0xc23a8a, rim: 0xffd0f0 },
 };
 
@@ -516,13 +523,16 @@ export const ENEMIES: Record<string, EnemyDef> = {
     /** 連鎖の衝撃波でのけぞらない（攻撃が止まらない） */
     noKnockback: true,
     params: {
-      /** ボス本体へのダメージは、この量ごとに相殺ポイント1（武器・レリックの倍率はかける） */
-      damagePerPoint: 120,
+      /**
+       * ボス本体へのダメージは、この量ごとに相殺ポイント1（武器・レリックの倍率はかける）。
+       * ストックが基本0になった分、120 → 80 に増やした
+       */
+      damagePerPoint: 80,
       /**
        * ボス本体に当てたときの武器倍率の上限（距離倍率・跳弾・溜めなどを掛けたあと、レリック加算の前）。
-       * ショットガン至近の×2がボス相手に稼ぎすぎたため（約1.2pt/秒 → 約0.7pt/秒）
+       * ショットガン至近の×2がボス相手に稼ぎすぎたため。1.2 では張り付きが成り立たなかったので 1.5
        */
-      pointRateCap: 1.2,
+      pointRateCap: 1.5,
     },
   },
   // 攻めの遠距離を試す: 照準線のあと高速弾。柱の陰に隠れながら後退する
@@ -557,7 +567,8 @@ export const BOSS = {
   hpByFloor: [1400, 1900, 2400],
   /**
    * ボスの弾は初速 startRatio で出て、accelTime 秒で最高速まで加速する。
-   * ボス本体の弾はすべて「硬い弾」: 連鎖の衝撃波とロケットの爆風で消えない（雑魚の弾は消える）
+   * ボス本体の弾はすべて「硬い弾」: 連鎖の衝撃波では、自機の周り CHAIN.shockwave.sturdyRadius 以内のものしか消えない。
+   * ロケットの爆風では消える（弾消しはロケットの持ち味なので）
    */
   bullet: { startRatio: 0.6, accelTime: 0.3 },
   /**

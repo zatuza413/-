@@ -447,7 +447,7 @@ export abstract class CombatScene extends Phaser.Scene {
     let erased = 0;
     for (const obj of this.enemyBullets.getChildren()) {
       const eb = obj as Bullet;
-      if (eb.active && !eb.sturdy && Phaser.Math.Distance.Between(x, y, eb.x, eb.y) <= ex.radius) {
+      if (eb.active && Phaser.Math.Distance.Between(x, y, eb.x, eb.y) <= ex.radius) {
         eb.kill();
         erased++;
       }
@@ -869,11 +869,11 @@ export abstract class CombatScene extends Phaser.Scene {
   private applyChainBonus(count: number): void {
     const px = this.player.x;
     const py = this.player.y;
-    // 衝撃波: 周囲の敵弾を消し、敵を押し返す
+    // 衝撃波: 周囲の敵弾を消し、敵を押し返す（ボスの硬い弾はすぐ周りだけ、ボスはのけぞらない）
     const r = Math.min(CHAIN.shockwave.base + CHAIN.shockwave.perChain * (count - this.queue.chainMin), CHAIN.shockwave.max);
     for (const obj of this.enemyBullets.getChildren()) {
       const b = obj as Bullet;
-      if (b.active && !b.sturdy && Phaser.Math.Distance.Between(px, py, b.x, b.y) <= r) {
+      if (b.active && Phaser.Math.Distance.Between(px, py, b.x, b.y) <= (b.sturdy ? Math.min(r, CHAIN.shockwave.sturdyRadius) : r)) {
         const pop = this.add.circle(b.x, b.y, 5, 0xffe066).setDepth(54);
         this.tweens.add({ targets: pop, scale: 2.2, alpha: 0, duration: 200, onComplete: () => pop.destroy() });
         b.kill();

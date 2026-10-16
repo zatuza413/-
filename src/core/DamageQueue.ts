@@ -315,6 +315,12 @@ export class DamageQueue {
   private cancelOne(viaStock: boolean): void {
     const p = this.items.shift();
     if (!p) return;
+    // ストックで消えた予告は連鎖に数えない（ストックが複数あると勝手に連鎖してしまうため）
+    if (viaStock) {
+      this.stats.cancels++;
+      this.emit({ type: 'cancelled', pending: p, viaStock });
+      return;
+    }
     this.registerCancel();
     // chainCount は更新済み（演出側が連鎖数で音程を変えられるように）
     this.emit({ type: 'cancelled', pending: p, viaStock });

@@ -194,6 +194,26 @@ describe('ストック', () => {
     expect(q.hit('bullet')).toBe('ignored');
   });
 
+  it('ストック上限0（基本）なら、予告が無いときのポイントは貯まらない', () => {
+    const { q } = setup({ baseMaxStock: 0 });
+    q.addPoints(3);
+    expect(q.stock).toBe(0);
+    expect(q.hit('bullet', 5)).toBe('queued');
+    expect(q.count).toBe(1);
+  });
+
+  it('ストックで消えた予告は連鎖に数えない（ストック2つで勝手に連鎖しない）', () => {
+    const { q, of } = setup();
+    q.setModifiers({ stockBonus: 1 });
+    q.addPoints(2);
+    expect(q.hit('bullet', 1)).toBe('cancelledByStock');
+    q.update(0.31);
+    expect(q.hit('bullet', 2)).toBe('cancelledByStock');
+    expect(of('chain')).toHaveLength(0);
+    expect(q.stats.chains).toBe(0);
+    expect(q.stats.cancels).toBe(2);
+  });
+
   it('ストック上限はアイテムで増やせ、下がれば切り詰める', () => {
     const { q } = setup();
     q.setModifiers({ stockBonus: 1 });
