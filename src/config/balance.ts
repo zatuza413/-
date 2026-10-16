@@ -578,8 +578,11 @@ export const BOSS = {
    * 「張り付く → 光ったら一歩引く → また寄る」のリズムにする
    */
   repel: { range: 130, after: 1.2, warn: 0.5, count: 28, speed: 340, life: 0.35, cooldown: 1.5 },
-  /** 召喚: warn 秒予告し、自機から minDist 以上離して出す。場に最大 maxAlive 体 */
-  summon: { warn: 0.8, minDist: 200, maxAlive: 5, killPoints: 0.5, damagePointMult: 0.5 },
+  /**
+   * 召喚: warn 秒予告し、自機から minDist 以上離して出す。場に最大 maxAlive 体。
+   * 撃破ポイントは killPoints（ストックが基本0になり、ハンドガンでボスが厳しくなったので 0.5 → 1）
+   */
+  summon: { warn: 0.8, minDist: 200, maxAlive: 5, killPoints: 1, damagePointMult: 0.5 },
   /** P1（HP 100〜70%）: 全方位リング、直進撃ちを召喚 */
   p1: { until: 0.7, ring: 24, ringInterval: 1.2, ringSpeed: 140, summonEvery: 8, summonId: 'shooter', summonCount: 2 },
   /** P2（HP 70〜35%）: 4本腕の回転弾、自機狙いの3方向、突進を召喚 */
